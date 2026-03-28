@@ -4,6 +4,7 @@ from datetime import datetime
 from functools import wraps
 import urllib.request
 import json as _json
+import math as _math
 import config
 
 app = Flask(__name__)
@@ -357,6 +358,101 @@ def get_timeseries():
     return jsonify(result)
 
 
+# ── Helpers: price history ────────────────────────────────────────────────────
+
+def _ensure_cache_table(db):
+    db.execute('''
+        CREATE TABLE IF NOT EXISTS price_cache (
+            ticker    TEXT,
+            date      TEXT,
+            price     REAL,
+            cached_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (ticker, date)
+        )
+    ''')
+    db.commit()
+
+
+def _fetch_history_yahoo(yahoo_ticker, range_str='2y', interval='1wk'):
+    """Fetch weekly close prices from Yahoo Finance chart API. Returns ([(date, price)], currency)."""
+    url = (f'https://query1.finance.yahoo.com/v8/finance/chart/{yahoo_ticker}'
+           f'?interval={interval}&range={range_str}')
+    req = urllib.request.Request(url, headers={
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+        'Accept': 'application/json',
+    })
+    with urllib.request.urlopen(req, timeout=15) as r:
+        data = _json.loads(r.read())
+    result   = data['chart']['result'][0]
+    timestamps = result['timestamp']
+    closes   = result['indicators']['adjclose'][0]['adjclose']
+    currency = result['meta'].get('currency', 'EUR')
+    pairs = []
+    for ts, close in zip(timestamps, closes):
+        if close is not None:
+            date = datetime.utcfromtimestamp(ts).strftime('%Y-%m-%d')
+            pairs.append((date, close))
+    return pairs, currency
+
+
+def _load_prices(db, tickers):
+    """Return {ticker: {date: price_eur}}, fetching from cache or Yahoo."""
+    from datetime import datetime as _dt, timedelta as _td
+    _ensure_cache_table(db)
+    cutoff = (_dt.utcnow() - _td(hours=24)).strftime('%Y-%m-%d %H:%M:%S')
+    all_prices = {}
+    for ticker in tickers:
+        yahoo_ticker = config.YAHOO_TICKERS.get(ticker)
+        if not yahoo_ticker:
+            continue
+        cached = db.execute(
+            'SELECT date, price FROM price_cache WHERE ticker=? AND cached_at>? ORDER BY date',
+            (ticker, cutoff)
+        ).fetchall()
+        if cached:
+            all_prices[ticker] = {r['date']: r['price'] for r in cached}
+        else:
+            try:
+                history, currency = _fetch_history_yahoo(yahoo_ticker)
+                if currency != 'EUR':
+                    rate = _fx_rate(currency)
+                    history = [(d, p * rate) for d, p in history]
+                db.execute('DELETE FROM price_cache WHERE ticker=?', (ticker,))
+                db.executemany(
+                    'INSERT OR REPLACE INTO price_cache (ticker, date, price) VALUES (?,?,?)',
+                    [(ticker, d, p) for d, p in history]
+                )
+                db.commit()
+                all_prices[ticker] = dict(history)
+            except Exception as e:
+                app.logger.warning(f'Price history fetch failed for {ticker}: {e}')
+    return all_prices
+
+
+def _pearson(x, y):
+    n = min(len(x), len(y))
+    if n < 6:
+        return None
+    x, y = x[:n], y[:n]
+    mx = sum(x) / n
+    my = sum(y) / n
+    num = sum((xi - mx) * (yi - my) for xi, yi in zip(x, y))
+    sx  = _math.sqrt(sum((xi - mx)**2 for xi in x))
+    sy  = _math.sqrt(sum((yi - my)**2 for yi in y))
+    if sx < 1e-12 or sy < 1e-12:
+        return None
+    return round(num / (sx * sy), 3)
+
+
+def _log_returns(prices):
+    out = []
+    for i in range(1, len(prices)):
+        p0, p1 = prices[i-1], prices[i]
+        if p0 and p1 and p0 > 0 and p1 > 0:
+            out.append(_math.log(p1 / p0))
+    return out
+
+
 # ── API: refresh prices from Yahoo Finance ────────────────────────────────────
 
 def _yahoo_price(yahoo_ticker):
@@ -414,6 +510,153 @@ def refresh_prices():
     db.commit()
     ok_count = sum(1 for v in results.values() if v['ok'])
     return jsonify({'results': results, 'updated': ok_count, 'total': len(tickers)})
+
+
+@app.route('/api/performance', methods=['GET'])
+@login_required
+def get_performance():
+    db = get_db()
+    tickers = [r['ticker'] for r in db.execute(
+        "SELECT DISTINCT ticker FROM etf_info WHERE ticker != 'VWCE'"
+    ).fetchall()]
+
+    all_prices = _load_prices(db, tickers)
+    if not all_prices:
+        return jsonify({'timeseries': []})
+
+    # Transactions sorted by date
+    txns = db.execute(
+        '''SELECT ticker, date, op_type, quantity, amount_euro, fees_euro
+           FROM transactions WHERE ticker != 'VWCE' ORDER BY date'''
+    ).fetchall()
+
+    # Build sorted price lookup per ticker for forward-fill
+    from bisect import bisect_right as _bsr
+    price_arrays = {}
+    for ticker, pd_ in all_prices.items():
+        dates_sorted = sorted(pd_.keys())
+        price_arrays[ticker] = (dates_sorted, [pd_[d] for d in dates_sorted])
+
+    def price_at(ticker, date):
+        if ticker not in price_arrays:
+            return None
+        dates, prices = price_arrays[ticker]
+        idx = _bsr(dates, date) - 1
+        return prices[idx] if idx >= 0 else None
+
+    # Union of all price dates
+    all_dates = sorted(set(d for pd_ in all_prices.values() for d in pd_.keys()))
+
+    shares    = {}
+    invested  = 0.0
+    txn_list  = list(txns)
+    txn_idx   = 0
+    result    = []
+
+    for date in all_dates:
+        while txn_idx < len(txn_list) and txn_list[txn_idx]['date'] <= date:
+            t = txn_list[txn_idx]
+            tk = t['ticker']
+            shares.setdefault(tk, 0.0)
+            amt = (t['amount_euro'] or 0)
+            fee = (t['fees_euro'] or 0)
+            if t['op_type'] == 'BUY':
+                shares[tk] += t['quantity']
+                invested   += amt          # total cash out (incl fees)
+            else:
+                shares[tk] -= t['quantity']
+                invested   -= amt
+            txn_idx += 1
+
+        value = 0.0
+        for tk, qty in shares.items():
+            if qty > 0:
+                p = price_at(tk, date)
+                if p:
+                    value += qty * p
+
+        if value > 0 or invested > 0:
+            result.append({'date': date, 'value': round(value, 2), 'invested': round(invested, 2)})
+
+    return jsonify({'timeseries': result})
+
+
+@app.route('/api/risk', methods=['GET'])
+@login_required
+def get_risk():
+    db = get_db()
+    tickers = [r['ticker'] for r in db.execute(
+        "SELECT DISTINCT ticker FROM etf_info WHERE ticker != 'VWCE'"
+    ).fetchall()]
+
+    all_prices = _load_prices(db, tickers)
+
+    # ── Correlation ──────────────────────────────────────────────────────────
+    # Common dates across all ETFs with prices
+    if all_prices:
+        common_dates = sorted(set.intersection(*[set(pd_.keys()) for pd_ in all_prices.values()]))
+    else:
+        common_dates = []
+
+    return_series = {}
+    for ticker, pd_ in all_prices.items():
+        prices_seq = [pd_[d] for d in common_dates]
+        return_series[ticker] = _log_returns(prices_seq)
+
+    ticker_list = list(return_series.keys())
+    correlation = {}
+    for t1 in ticker_list:
+        correlation[t1] = {}
+        for t2 in ticker_list:
+            if t1 == t2:
+                correlation[t1][t2] = 1.0
+            elif t2 in correlation and t1 in correlation.get(t2, {}):
+                correlation[t1][t2] = correlation[t2][t1]
+            else:
+                correlation[t1][t2] = _pearson(return_series[t1], return_series[t2])
+
+    # ── HHI ─────────────────────────────────────────────────────────────────
+    holdings = db.execute(
+        '''SELECT t.ticker, e.type, e.current_price_euro,
+               SUM(CASE WHEN t.op_type='BUY' THEN t.quantity ELSE -t.quantity END) AS qty
+           FROM transactions t LEFT JOIN etf_info e ON t.ticker=e.ticker
+           WHERE t.ticker != 'VWCE' GROUP BY t.ticker HAVING qty > 0.00001'''
+    ).fetchall()
+
+    total_val = sum((r['qty'] * r['current_price_euro']) for r in holdings if r['current_price_euro'])
+    hhi = 0.0
+    if total_val > 0:
+        for r in holdings:
+            if r['current_price_euro']:
+                w = r['qty'] * r['current_price_euro'] / total_val
+                hhi += w * w
+    hhi_score = round(hhi * 10000)
+
+    # ── Currency exposure ────────────────────────────────────────────────────
+    currency_rows = db.execute(
+        "SELECT ticker, currency FROM etf_info WHERE ticker != 'VWCE'"
+    ).fetchall()
+    cur_map = {r['ticker']: (r['currency'] or 'EUR') for r in currency_rows}
+
+    currency_val = {}
+    for r in holdings:
+        if r['current_price_euro']:
+            cur = cur_map.get(r['ticker'], 'EUR')
+            val = r['qty'] * r['current_price_euro']
+            currency_val[cur] = currency_val.get(cur, 0.0) + val
+
+    currency_pct = {}
+    if total_val > 0:
+        for cur, val in currency_val.items():
+            currency_pct[cur] = round(val / total_val * 100, 2)
+
+    return jsonify({
+        'correlation': correlation,
+        'tickers': ticker_list,
+        'hhi': hhi_score,
+        'currency_exposure': currency_pct,
+        'data_points': len(common_dates),
+    })
 
 
 if __name__ == '__main__':

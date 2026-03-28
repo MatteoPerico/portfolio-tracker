@@ -438,6 +438,42 @@
     @media (max-width: 600px) {
       .g4, .g3, .g2 { grid-template-columns: 1fr; }
     }
+
+    /* ── Performance & Risk ──────────────────────────────────────────────── */
+    .perf-section-hd {
+      font-size: .7rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .12em;
+      color: var(--muted2);
+      padding: .25rem 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .perf-section-hd.mb { margin-bottom: 1rem; }
+    .loading-msg {
+      color: var(--muted);
+      font-size: .82rem;
+      padding: 2rem 0;
+      text-align: center;
+    }
+    /* Correlation heatmap */
+    .corr-wrap { overflow-x: auto; }
+    .corr-tbl { border-collapse: collapse; font-size: .72rem; font-family: var(--mono); width: 100%; }
+    .corr-tbl th {
+      font-size: .65rem; font-weight: 600; color: var(--muted2);
+      padding: 4px 6px; white-space: nowrap;
+    }
+    .corr-tbl td {
+      padding: 5px 7px; text-align: center; white-space: nowrap;
+      border: 1px solid rgba(255,255,255,.04); border-radius: 3px;
+      font-weight: 500;
+    }
+    /* HHI bar */
+    .hhi-bar-wrap { background: var(--surface); border-radius: 6px; height: 8px; margin: .5rem 0; overflow: hidden; }
+    .hhi-bar      { height: 100%; border-radius: 6px; transition: width .6s ease; }
+    .stat-row { display: flex; justify-content: space-between; align-items: center; margin: .4rem 0; }
+    .stat-lbl { font-size: .78rem; color: var(--muted2); }
+    .stat-val { font-family: var(--mono); font-size: .88rem; font-weight: 600; }
   </style>
 </head>
 <body>
@@ -459,6 +495,9 @@
     <div class="nav-label" style="margin-top:.5rem">Allocazione</div>
     <a class="nav-item" data-page="geo">
       <span class="nav-icon">◎</span><span>Geografica</span>
+    </a>
+    <a class="nav-item" data-page="target">
+      <span class="nav-icon">⊙</span><span>Target</span>
     </a>
     <div class="nav-label" style="margin-top:.5rem">Operazioni</div>
     <a class="nav-item" data-page="transactions">
@@ -556,6 +595,46 @@
           </tr></thead>
           <tbody></tbody>
         </table>
+      </div>
+    </div>
+
+    <!-- Performance nel tempo -->
+    <div class="perf-section-hd mb" style="margin-top:2rem">Performance nel tempo</div>
+    <div class="card" style="margin-bottom:1.5rem">
+      <div class="loading-msg" id="perf-loading">Caricamento dati storici da Yahoo Finance...</div>
+      <canvas id="chart-perf" style="display:none;max-height:340px"></canvas>
+    </div>
+
+    <!-- Rischio -->
+    <div class="perf-section-hd mb">Rischio</div>
+    <div class="grid g2" style="margin-bottom:1.5rem">
+      <div class="card">
+        <div class="card-title">Correlazione tra ETF</div>
+        <p style="font-size:.75rem;color:var(--muted);margin-bottom:.75rem">Calcolata su rendimenti settimanali (2 anni). Verde = bassa correlazione = migliore diversificazione.</p>
+        <div class="loading-msg" id="corr-loading">Caricamento...</div>
+        <div class="corr-wrap" id="corr-container" style="display:none"></div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:1rem">
+        <div class="card">
+          <div class="card-title">Concentrazione (HHI)</div>
+          <div class="loading-msg" id="hhi-loading">Caricamento...</div>
+          <div id="hhi-container" style="display:none">
+            <div style="display:flex;align-items:baseline;gap:.5rem;margin-bottom:.5rem">
+              <span id="hhi-value" class="stat-val" style="font-size:1.6rem"></span>
+              <span style="font-size:.75rem;color:var(--muted)">/ 10 000</span>
+            </div>
+            <div class="hhi-bar-wrap"><div class="hhi-bar" id="hhi-bar"></div></div>
+            <div id="hhi-label" style="font-size:.78rem;margin-top:.4rem"></div>
+            <div style="font-size:.72rem;color:var(--muted);margin-top:.5rem">
+              &lt;1 000 = alta diversificazione · 1 000–2 500 = moderata · &gt;2 500 = concentrata
+            </div>
+          </div>
+        </div>
+        <div class="card" style="flex:1">
+          <div class="card-title">Esposizione valutaria</div>
+          <div class="loading-msg" id="cur-loading">Caricamento...</div>
+          <canvas id="chart-currency" style="display:none;max-height:200px"></canvas>
+        </div>
       </div>
     </div>
   </div>
@@ -663,36 +742,54 @@
       </div>
     </div>
 
-    <!-- TARGET EDITOR -->
-    <div class="section-hd mb">🎯 Imposta target per ETF</div>
-    <div class="card">
-      <p style="font-size:.8rem;color:var(--muted2);margin-bottom:1.5rem">
-        I pesi sono espressi come percentuale <strong style="color:var(--text2)">all'interno del gruppo</strong> (azionario o obbligazionario). I grafici target si aggiornano in tempo reale.
+  </div>
+
+  <!-- TARGET ─────────────────────────────────────────────────────────────── -->
+  <div id="page-target" class="page">
+    <div class="page-header">
+      <div>
+        <div class="page-title">Target Allocation</div>
+        <div class="page-sub">Imposta il peso target per ogni ETF all'interno della propria classe</div>
+      </div>
+      <button class="btn btn-primary" onclick="saveTargets()">Salva target</button>
+    </div>
+
+    <div class="card mb2">
+      <p style="font-size:.82rem;color:var(--muted2)">
+        I pesi sono espressi come percentuale <strong style="color:var(--text2)">all'interno del gruppo</strong> (azionario o obbligazionario) e devono sommare a 100% per ciascun gruppo. I grafici geografici si aggiornano in tempo reale.
       </p>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:2rem">
-        <div>
-          <div style="font-size:.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:var(--blue);margin-bottom:1rem">Azionario</div>
-          <div id="tgt-inputs-stock"></div>
-          <div style="display:flex;align-items:center;gap:.5rem;margin-top:.75rem;padding-top:.75rem;border-top:1px solid var(--border)">
+    </div>
+
+    <div class="grid g2">
+      <!-- Azionario -->
+      <div class="card">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.25rem">
+          <div style="font-size:.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:var(--blue)">Azionario</div>
+          <div style="display:flex;align-items:center;gap:.5rem">
             <span style="font-size:.75rem;color:var(--muted)">Totale:</span>
-            <span id="tgt-sum-stock" style="font-family:var(--mono);font-size:.85rem;font-weight:600"></span>
-            <span style="font-size:.72rem;color:var(--muted)">(deve essere 100%)</span>
+            <span id="tgt-sum-stock" style="font-family:var(--mono);font-size:.9rem;font-weight:600"></span>
+            <span style="font-size:.72rem;color:var(--muted)">(= 100%)</span>
           </div>
         </div>
-        <div>
-          <div style="font-size:.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:var(--amber);margin-bottom:1rem">Obbligazionario</div>
-          <div id="tgt-inputs-bond"></div>
-          <div style="display:flex;align-items:center;gap:.5rem;margin-top:.75rem;padding-top:.75rem;border-top:1px solid var(--border)">
+        <div id="tgt-inputs-stock"></div>
+      </div>
+
+      <!-- Obbligazionario -->
+      <div class="card">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.25rem">
+          <div style="font-size:.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:var(--amber)">Obbligazionario</div>
+          <div style="display:flex;align-items:center;gap:.5rem">
             <span style="font-size:.75rem;color:var(--muted)">Totale:</span>
-            <span id="tgt-sum-bond" style="font-family:var(--mono);font-size:.85rem;font-weight:600"></span>
-            <span style="font-size:.72rem;color:var(--muted)">(deve essere 100%)</span>
+            <span id="tgt-sum-bond" style="font-family:var(--mono);font-size:.9rem;font-weight:600"></span>
+            <span style="font-size:.72rem;color:var(--muted)">(= 100%)</span>
           </div>
         </div>
+        <div id="tgt-inputs-bond"></div>
       </div>
-      <div style="margin-top:1.5rem;display:flex;align-items:center;gap:.75rem">
-        <button class="btn btn-primary" onclick="saveTargets()">Salva target</button>
-        <span id="tgt-save-msg" style="font-size:.8rem"></span>
-      </div>
+    </div>
+
+    <div style="margin-top:1rem;display:flex;align-items:center;gap:.75rem">
+      <span id="tgt-save-msg" style="font-size:.8rem"></span>
     </div>
   </div>
 
@@ -828,8 +925,10 @@ function navigate(page) {
   document.getElementById('page-' + page).classList.add('active');
   document.querySelector(`[data-page="${page}"]`).classList.add('active');
   if (page === 'dashboard' || page === 'analytics') loadAnalytics();
+  if (page === 'analytics') loadAnalyticsExtras();
   if (page === 'transactions') loadTransactions();
   if (page === 'geo') loadGeo();
+  if (page === 'target') { if (!geoData) loadGeo(); else renderTargetInputs(); }
 }
 document.querySelectorAll('.nav-item[data-page]').forEach(el => {
   el.addEventListener('click', e => { e.preventDefault(); navigate(el.dataset.page); });
@@ -912,12 +1011,182 @@ async function refreshPrices() {
   }
 }
 
+// ── Performance & Risk ─────────────────────────────────────────────────────
+
+async function loadPerformance() {
+  try {
+    const res  = await fetch('/api/performance');
+    const data = await res.json();
+    document.getElementById('perf-loading').style.display = 'none';
+    const canvas = document.getElementById('chart-perf');
+    canvas.style.display = 'block';
+
+    const ts = data.timeseries || [];
+    if (!ts.length) {
+      document.getElementById('perf-loading').textContent = 'Nessun dato disponibile.';
+      document.getElementById('perf-loading').style.display = 'block';
+      return;
+    }
+
+    const labels   = ts.map(d => d.date);
+    const values   = ts.map(d => d.value);
+    const invested = ts.map(d => d.invested);
+
+    if (CHARTS['chart-perf']) CHARTS['chart-perf'].destroy();
+    CHARTS['chart-perf'] = new Chart(canvas.getContext('2d'), {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [
+          {
+            label: 'Valore portafoglio',
+            data: values,
+            borderColor: C.indigo,
+            backgroundColor: C.indigo + '22',
+            fill: true,
+            tension: 0.3,
+            pointRadius: 0,
+            pointHoverRadius: 4,
+            borderWidth: 2,
+          },
+          {
+            label: 'Capitale investito',
+            data: invested,
+            borderColor: C.green,
+            backgroundColor: 'transparent',
+            borderDash: [5, 4],
+            tension: 0,
+            pointRadius: 0,
+            pointHoverRadius: 4,
+            borderWidth: 1.5,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { labels: { font:{size:11}, boxWidth:12, color: C.text } },
+          tooltip: {
+            callbacks: {
+              label: ctx => ` ${ctx.dataset.label}: ${fmtE(ctx.raw)}`,
+              afterBody: items => {
+                const v = items[0]?.raw, i = items[1]?.raw;
+                if (v != null && i != null && i > 0) {
+                  const pnl  = v - i;
+                  const pnlP = (pnl / i * 100).toFixed(1);
+                  return [`  P&L: ${fmtE(pnl)} (${pnlP}%)`];
+                }
+                return [];
+              },
+            },
+          },
+        },
+        scales: {
+          x: {
+            ticks: { maxTicksLimit: 10, font:{size:10}, color: C.muted, maxRotation: 0 },
+            grid:  { color: C.border },
+          },
+          y: {
+            ticks: { callback: v => '€' + (v >= 1000 ? (v/1000).toFixed(0)+'k' : v), font:{size:10}, color: C.muted },
+            grid:  { color: C.border },
+          },
+        },
+      },
+    });
+  } catch(e) {
+    document.getElementById('perf-loading').textContent = 'Errore nel caricamento: ' + e.message;
+  }
+}
+
+async function loadRisk() {
+  try {
+    const res  = await fetch('/api/risk');
+    const data = await res.json();
+
+    // ── Correlation heatmap ──────────────────────────────────────────────
+    const tickers = data.tickers || [];
+    const corr    = data.correlation || {};
+    document.getElementById('corr-loading').style.display = 'none';
+    const container = document.getElementById('corr-container');
+    container.style.display = 'block';
+
+    function corrColor(v) {
+      if (v === null) return 'rgba(255,255,255,.05)';
+      if (v >= 0.99) return 'rgba(129,140,248,.25)'; // diagonal
+      const abs = Math.abs(v);
+      if (v < 0)   return `rgba(74,222,128,${0.1 + abs * 0.5})`;  // green for negative
+      if (v < 0.3) return `rgba(255,255,255,${abs * 0.15})`;
+      if (v < 0.6) return `rgba(251,191,36,${0.15 + abs * 0.35})`;
+      return `rgba(248,113,113,${0.2 + abs * 0.55})`;             // red for high positive
+    }
+    function corrText(v) {
+      if (v === null) return '—';
+      return v.toFixed(2);
+    }
+
+    let html = '<table class="corr-tbl"><thead><tr><th></th>';
+    tickers.forEach(t => { html += `<th>${t}</th>`; });
+    html += '</tr></thead><tbody>';
+    tickers.forEach(t1 => {
+      html += `<tr><th style="text-align:left;color:var(--text2)">${t1}</th>`;
+      tickers.forEach(t2 => {
+        const v = corr[t1]?.[t2] ?? null;
+        html += `<td style="background:${corrColor(v)};color:${v !== null ? 'var(--text)' : 'var(--muted)'}">${corrText(v)}</td>`;
+      });
+      html += '</tr>';
+    });
+    html += '</tbody></table>';
+    container.innerHTML = html;
+
+    if (data.data_points) {
+      container.insertAdjacentHTML('afterend',
+        `<div style="font-size:.7rem;color:var(--muted);margin-top:.5rem">${data.data_points} settimane di dati</div>`
+      );
+    }
+
+    // ── HHI ─────────────────────────────────────────────────────────────
+    document.getElementById('hhi-loading').style.display = 'none';
+    const hhiCont = document.getElementById('hhi-container');
+    hhiCont.style.display = 'block';
+    const hhi = data.hhi || 0;
+    document.getElementById('hhi-value').textContent = hhi.toLocaleString('it-IT');
+    const pct = Math.min(hhi / 10000 * 100, 100);
+    const bar = document.getElementById('hhi-bar');
+    bar.style.width = pct + '%';
+    bar.style.background = hhi < 1000 ? C.green : hhi < 2500 ? C.amber : C.red;
+    const lbl = document.getElementById('hhi-label');
+    lbl.textContent = hhi < 1000 ? 'Alta diversificazione' : hhi < 2500 ? 'Diversificazione moderata' : 'Portafoglio concentrato';
+    lbl.style.color  = hhi < 1000 ? C.green : hhi < 2500 ? C.amber : C.red;
+
+    // ── Currency donut ───────────────────────────────────────────────────
+    document.getElementById('cur-loading').style.display = 'none';
+    const curCanvas = document.getElementById('chart-currency');
+    curCanvas.style.display = 'block';
+    const curExp = data.currency_exposure || {};
+    const curLabels = Object.keys(curExp);
+    const curValues = Object.values(curExp);
+    const curColors = ['#818cf8','#fbbf24','#f87171','#34d399','#60a5fa','#c084fc'];
+    mkDonut('chart-currency', curLabels, curValues, curColors.slice(0, curLabels.length));
+
+  } catch(e) {
+    document.getElementById('corr-loading').textContent = 'Errore: ' + e.message;
+    document.getElementById('hhi-loading').textContent  = 'Errore.';
+    document.getElementById('cur-loading').textContent  = 'Errore.';
+  }
+}
+
 // ── Analytics ─────────────────────────────────────────────────────────────
 async function loadAnalytics() {
   const res = await fetch('/api/analytics');
   analyticsData = await res.json();
   renderDashboard();
   renderAnalyticsTable();
+}
+
+function loadAnalyticsExtras() {
+  loadPerformance();
+  loadRisk();
 }
 
 function renderDashboard() {
@@ -1257,6 +1526,7 @@ async function saveTargets() {
 // ── Init ──────────────────────────────────────────────────────────────────────
 document.getElementById('input-date').valueAsDate = new Date();
 loadAnalytics();
+loadAnalyticsExtras();
 </script>
 </body>
 </html>
