@@ -1,23 +1,17 @@
-from flask import Flask, render_template, request, jsonify, session, redirect, url_for
+from flask import Flask, render_template, request, jsonify
 import sqlite3
 from datetime import datetime
-from functools import wraps
 import urllib.request
 import json as _json
 import math as _math
 import config
 
 app = Flask(__name__)
-app.secret_key = config.SECRET_KEY
 
 
 def login_required(f):
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        if not session.get('logged_in'):
-            return redirect(url_for('login'))
-        return f(*args, **kwargs)
-    return decorated
+    """No-op decorator — auth disabled."""
+    return f
 
 
 def get_db():
@@ -26,29 +20,9 @@ def get_db():
     return conn
 
 
-# ── Auth ──────────────────────────────────────────────────────────────────────
-
-@app.route('/login', methods=['GET', 'POST'])
-def login():
-    error = None
-    if request.method == 'POST':
-        if request.form.get('password') == config.PASSWORD:
-            session['logged_in'] = True
-            return redirect(url_for('index'))
-        error = 'Password errata.'
-    return render_template('login.html', error=error)
-
-
-@app.route('/logout')
-def logout():
-    session.pop('logged_in', None)
-    return redirect(url_for('login'))
-
-
 # ── Pages ─────────────────────────────────────────────────────────────────────
 
 @app.route('/')
-@login_required
 def index():
     return render_template('index.html')
 
