@@ -135,12 +135,72 @@ def get_analytics():
     stock_value = sum(r['holding_value'] or 0 for r in result if r['type'] == 'STOCK')
     bond_value  = sum(r['holding_value'] or 0 for r in result if r['type'] == 'BOND')
 
+    # ── Period P&L (3 months / 12 months) from price_cache ──────────────────
+    try:
+        db.execute('SELECT 1 FROM price_cache LIMIT 1')
+        cache_ok = True
+    except Exception:
+        cache_ok = False
+
+    date_3m  = (datetime.utcnow() - __import__('datetime').timedelta(days=91)).strftime('%Y-%m-%d')
+    date_12m = (datetime.utcnow() - __import__('datetime').timedelta(days=365)).strftime('%Y-%m-%d')
+
+    val_3m_ago  = 0.0
+    val_12m_ago = 0.0
+    has_3m = has_12m = False
+
+    if cache_ok:
+        for item in result:
+            ticker  = item['ticker']
+            holding = item['holding'] or 0
+            cur_p   = item['current_price_euro']
+            if not cur_p or not holding:
+                item['pnl_3m_pct'] = item['pnl_12m_pct'] = None
+                continue
+
+            r3 = db.execute(
+                'SELECT price FROM price_cache WHERE ticker=? AND date<=? ORDER BY date DESC LIMIT 1',
+                (ticker, date_3m)
+            ).fetchone()
+            r12 = db.execute(
+                'SELECT price FROM price_cache WHERE ticker=? AND date<=? ORDER BY date DESC LIMIT 1',
+                (ticker, date_12m)
+            ).fetchone()
+
+            if r3:
+                p3 = r3['price']
+                item['pnl_3m_pct'] = round((cur_p - p3) / p3 * 100, 2) if p3 else None
+                val_3m_ago += holding * p3
+                has_3m = True
+            else:
+                item['pnl_3m_pct'] = None
+
+            if r12:
+                p12 = r12['price']
+                item['pnl_12m_pct'] = round((cur_p - p12) / p12 * 100, 2) if p12 else None
+                val_12m_ago += holding * p12
+                has_12m = True
+            else:
+                item['pnl_12m_pct'] = None
+    else:
+        for item in result:
+            item['pnl_3m_pct'] = item['pnl_12m_pct'] = None
+
+    total_pnl_3m      = round(total_value - val_3m_ago,  2) if has_3m  else None
+    total_pnl_3m_pct  = round(total_pnl_3m  / val_3m_ago  * 100, 2) if (has_3m  and val_3m_ago)  else None
+    total_pnl_12m     = round(total_value - val_12m_ago, 2) if has_12m else None
+    total_pnl_12m_pct = round(total_pnl_12m / val_12m_ago * 100, 2) if (has_12m and val_12m_ago) else None
+
     return jsonify({
         'etfs': result,
         'total_value': round(total_value, 2),
         'total_cost': round(total_cost, 2),
         'total_pnl': total_pnl,
         'total_pnl_pct': total_pnl_pct,
+        'total_pnl_3m': total_pnl_3m,
+        'total_pnl_3m_pct': total_pnl_3m_pct,
+        'total_pnl_12m': total_pnl_12m,
+        'total_pnl_12m_pct': total_pnl_12m_pct,
         'stock_value': round(stock_value, 2),
         'bond_value': round(bond_value, 2),
     })
@@ -630,6 +690,96 @@ def get_risk():
         'hhi': hhi_score,
         'currency_exposure': currency_pct,
         'data_points': len(common_dates),
+    })
+
+
+@app.route('/api/simulate_etf', methods=['POST'])
+@login_required
+def simulate_etf():
+    d      = request.json or {}
+    yticker = d.get('ticker', '').strip()
+    amount  = float(d.get('amount', 0))
+    if not yticker or amount <= 0:
+        return jsonify({'error': 'Ticker e importo richiesti'}), 400
+
+    # Fetch price history for the new ETF
+    try:
+        history, currency = _fetch_history_yahoo(yticker)
+        if currency != 'EUR':
+            rate = _fx_rate(currency)
+            history = [(dt, p * rate) for dt, p in history]
+    except Exception as e:
+        return jsonify({'error': f'Ticker non trovato o non disponibile: {e}'}), 404
+
+    new_prices = dict(history)
+
+    # Load existing ETF price histories (from cache / Yahoo)
+    db = get_db()
+    existing_tickers = [r['ticker'] for r in db.execute(
+        "SELECT DISTINCT ticker FROM etf_info WHERE ticker != 'VWCE'"
+    ).fetchall()]
+    existing_prices = _load_prices(db, existing_tickers)
+
+    # Correlations between new ETF and each existing one
+    correlations  = {}
+    corr_values   = []
+    most_corr_tkr = None
+    most_corr_val = -2.0
+
+    for tkr, pd_ in existing_prices.items():
+        common = sorted(set(new_prices.keys()) & set(pd_.keys()))
+        if len(common) < 8:
+            correlations[tkr] = None
+            continue
+        r1 = _log_returns([new_prices[dt] for dt in common])
+        r2 = _log_returns([pd_[dt]        for dt in common])
+        c  = _pearson(r1, r2)
+        correlations[tkr] = c
+        if c is not None:
+            corr_values.append(c)
+            if c > most_corr_val:
+                most_corr_val = c
+                most_corr_tkr = tkr
+
+    avg_corr = round(sum(corr_values) / len(corr_values), 3) if corr_values else None
+
+    # Current HHI
+    holdings = db.execute(
+        '''SELECT t.ticker, e.current_price_euro,
+               SUM(CASE WHEN t.op_type='BUY' THEN t.quantity ELSE -t.quantity END) AS qty
+           FROM transactions t LEFT JOIN etf_info e ON t.ticker=e.ticker
+           WHERE t.ticker != 'VWCE' GROUP BY t.ticker HAVING qty > 0.00001'''
+    ).fetchall()
+
+    total_val = sum(r['qty'] * r['current_price_euro'] for r in holdings if r['current_price_euro'])
+    new_total = total_val + amount
+
+    current_hhi = 0.0
+    if total_val > 0:
+        for r in holdings:
+            if r['current_price_euro']:
+                w = r['qty'] * r['current_price_euro'] / total_val
+                current_hhi += w * w
+    current_hhi = round(current_hhi * 10000)
+
+    simulated_hhi = 0.0
+    if new_total > 0:
+        for r in holdings:
+            if r['current_price_euro']:
+                w = r['qty'] * r['current_price_euro'] / new_total
+                simulated_hhi += w * w
+        simulated_hhi += (amount / new_total) ** 2
+    simulated_hhi = round(simulated_hhi * 10000)
+
+    return jsonify({
+        'correlations':    correlations,
+        'avg_correlation': avg_corr,
+        'most_correlated': most_corr_tkr,
+        'current_hhi':     current_hhi,
+        'simulated_hhi':   simulated_hhi,
+        'hhi_delta':       simulated_hhi - current_hhi,
+        'data_points':     len(history),
+        'currency':        currency,
     })
 
 

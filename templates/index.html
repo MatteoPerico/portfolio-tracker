@@ -522,7 +522,7 @@
       <button class="btn btn-ghost" id="btn-refresh-prices" onclick="refreshPrices()">↻ Aggiorna prezzi</button>
     </div>
 
-    <div class="grid g4 mb2">
+    <div class="grid g4 mb">
       <div class="kpi">
         <div class="kpi-label">Valore portafoglio</div>
         <div class="kpi-val" id="kpi-total">—</div>
@@ -542,6 +542,20 @@
         <div class="kpi-label">Split az / obbl</div>
         <div class="kpi-val" id="kpi-split">—</div>
         <div class="kpi-sub">azionario / obbligazionario</div>
+      </div>
+    </div>
+    <div class="grid g4 mb2">
+      <div></div>
+      <div></div>
+      <div class="kpi">
+        <div class="kpi-label">P&amp;L ultimi 3 mesi</div>
+        <div class="kpi-val" id="kpi-pnl-3m">—</div>
+        <div class="kpi-sub" id="kpi-pnl-3m-pct" style="font-size:.72rem;color:var(--muted)">carica Analytics per i dati</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">P&amp;L ultimi 12 mesi</div>
+        <div class="kpi-val" id="kpi-pnl-12m">—</div>
+        <div class="kpi-sub" id="kpi-pnl-12m-pct" style="font-size:.72rem;color:var(--muted)">carica Analytics per i dati</div>
       </div>
     </div>
 
@@ -586,6 +600,7 @@
             <th>Ticker</th><th>Nome</th><th>Tipo</th><th>Valuta</th>
             <th>Quantità</th><th>Prezzo €</th><th>Valore €</th><th>Investito €</th>
             <th>Prezzo medio</th><th>P&amp;L €</th><th>P&amp;L %</th>
+            <th>3 mesi</th><th>12 mesi</th>
             <th>Peso portafoglio</th><th>Peso / classe</th><th>Target</th><th>Δ</th>
           </tr></thead>
           <tbody></tbody>
@@ -629,6 +644,43 @@
           <div class="card-title">Esposizione valutaria</div>
           <div class="loading-msg" id="cur-loading">Caricamento...</div>
           <canvas id="chart-currency" style="display:none;max-height:200px"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <!-- Simulatore ETF -->
+    <div class="perf-section-hd mb">Simulatore ETF</div>
+    <div class="card" style="margin-bottom:2rem">
+      <p style="font-size:.78rem;color:var(--muted2);margin-bottom:1.25rem">
+        Inserisci un ETF non presente in portafoglio per vedere quanto aggiungerebbe in termini di diversificazione.
+      </p>
+      <div style="display:flex;gap:.75rem;align-items:flex-end;flex-wrap:wrap;margin-bottom:1.25rem">
+        <div>
+          <label class="form-lbl">Ticker Yahoo Finance</label>
+          <input class="form-input" id="sim-ticker" placeholder="es. VWRL.MI" style="width:150px"
+            onkeydown="if(event.key==='Enter') runSimulation()">
+        </div>
+        <div>
+          <label class="form-lbl">Importo ipotetico (€)</label>
+          <input class="form-input" id="sim-amount" type="number" min="1" placeholder="es. 2000" style="width:140px"
+            onkeydown="if(event.key==='Enter') runSimulation()">
+        </div>
+        <button class="btn btn-primary" onclick="runSimulation()">Simula</button>
+      </div>
+      <div id="sim-loading" class="loading-msg" style="display:none">Recupero dati storici da Yahoo Finance...</div>
+      <div id="sim-error" style="display:none;color:var(--red);font-size:.82rem;padding:.5rem 0"></div>
+      <div id="sim-results" style="display:none">
+        <div id="sim-verdict" style="border-radius:var(--radius-sm);padding:.75rem 1rem;margin-bottom:1.25rem;font-size:.88rem;font-weight:500"></div>
+        <div class="grid g2">
+          <div>
+            <div style="font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:var(--muted2);margin-bottom:.75rem">Correlazione con portafoglio attuale</div>
+            <div id="sim-corr-table"></div>
+            <div id="sim-avg-corr" style="margin-top:.75rem;padding-top:.75rem;border-top:1px solid var(--border);font-size:.82rem;color:var(--muted2)"></div>
+          </div>
+          <div>
+            <div style="font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:var(--muted2);margin-bottom:.75rem">Impatto sulla concentrazione (HHI)</div>
+            <div id="sim-hhi"></div>
+          </div>
         </div>
       </div>
     </div>
@@ -1171,6 +1223,89 @@ async function loadRisk() {
   }
 }
 
+// ── ETF Simulator ──────────────────────────────────────────────────────────
+async function runSimulation() {
+  const ticker = document.getElementById('sim-ticker').value.trim().toUpperCase();
+  const amount = parseFloat(document.getElementById('sim-amount').value);
+  const errEl  = document.getElementById('sim-error');
+  const loadEl = document.getElementById('sim-loading');
+  const resEl  = document.getElementById('sim-results');
+
+  errEl.style.display = 'none';
+  resEl.style.display = 'none';
+
+  if (!ticker) { errEl.textContent = 'Inserisci un ticker Yahoo Finance (es. VWRL.MI).'; errEl.style.display = 'block'; return; }
+  if (!amount || amount <= 0) { errEl.textContent = 'Inserisci un importo valido.'; errEl.style.display = 'block'; return; }
+
+  loadEl.style.display = 'block';
+
+  try {
+    const res  = await fetch('/api/simulate_etf', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ticker, amount }),
+    });
+    const data = await res.json();
+    loadEl.style.display = 'none';
+
+    if (data.error) { errEl.textContent = 'Errore: ' + data.error; errEl.style.display = 'block'; return; }
+
+    // ── Verdict ──────────────────────────────────────────────────────────
+    const avg  = data.avg_correlation;
+    const vEl  = document.getElementById('sim-verdict');
+    let vtxt, vbg, vcol;
+    if (avg === null) { vtxt = 'Dati insufficienti per calcolare la correlazione.'; vbg = 'rgba(255,255,255,.05)'; vcol = C.muted; }
+    else if (avg < 0.4) { vtxt = `✓ Ottima diversificazione — correlazione media ${avg.toFixed(2)}. Aggiunge valore al portafoglio.`; vbg = C.green+'18'; vcol = C.green; }
+    else if (avg < 0.6) { vtxt = `◎ Buona diversificazione — correlazione media ${avg.toFixed(2)}.`; vbg = C.indigo+'18'; vcol = C.indigo; }
+    else if (avg < 0.75) { vtxt = `△ Diversificazione moderata — correlazione media ${avg.toFixed(2)}. Sovrapposizione parziale col portafoglio.`; vbg = C.amber+'18'; vcol = C.amber; }
+    else { vtxt = `✗ Alta sovrapposizione — correlazione media ${avg.toFixed(2)}. Massima con ${data.most_correlated ?? '—'}.`; vbg = C.red+'18'; vcol = C.red; }
+    vEl.textContent = vtxt;
+    vEl.style.cssText += `background:${vbg};color:${vcol};border:1px solid ${vcol}44`;
+
+    // ── Correlation table ─────────────────────────────────────────────────
+    const corr = data.correlations;
+    const sorted = Object.entries(corr).sort((a, b) => (b[1] ?? -2) - (a[1] ?? -2));
+    let html = '<table style="width:100%;border-collapse:collapse">';
+    sorted.forEach(([t, v]) => {
+      const col  = v === null ? C.muted : v < 0.4 ? C.green : v < 0.65 ? C.amber : C.red;
+      const barW = v !== null ? Math.round(Math.abs(v) * 100) : 0;
+      html += `<tr>
+        <td style="padding:4px 8px 4px 0;font-size:.8rem;font-weight:600;color:var(--text2);width:58px">${t}</td>
+        <td style="padding:4px 0">
+          <div style="display:flex;align-items:center;gap:.5rem">
+            <div style="flex:1;height:5px;background:var(--surface2);border-radius:3px;overflow:hidden">
+              <div style="height:100%;width:${barW}%;background:${col};border-radius:3px"></div>
+            </div>
+            <span style="font-family:var(--mono);font-size:.78rem;color:${col};width:42px;text-align:right">${v !== null ? v.toFixed(3) : '—'}</span>
+          </div>
+        </td>
+      </tr>`;
+    });
+    html += '</table>';
+    document.getElementById('sim-corr-table').innerHTML = html;
+    document.getElementById('sim-avg-corr').textContent =
+      `Correlazione media: ${avg !== null ? avg.toFixed(3) : '—'} · ${data.data_points} settimane di dati`;
+
+    // ── HHI ──────────────────────────────────────────────────────────────
+    const delta = data.hhi_delta;
+    const dCol  = delta < 0 ? C.green : delta > 200 ? C.red : C.amber;
+    const dSign = delta > 0 ? '+' : '';
+    const dNote = delta < 0 ? 'Migliora la diversificazione ✓' : delta === 0 ? 'Nessun impatto' : 'Concentrazione lievemente maggiore';
+    document.getElementById('sim-hhi').innerHTML = `
+      <div class="stat-row"><span class="stat-lbl">HHI attuale</span><span class="stat-val">${data.current_hhi.toLocaleString('it-IT')}</span></div>
+      <div class="stat-row" style="margin:.4rem 0"><span class="stat-lbl">HHI simulato</span><span class="stat-val">${data.simulated_hhi.toLocaleString('it-IT')}</span></div>
+      <div style="height:1px;background:var(--border);margin:.6rem 0"></div>
+      <div class="stat-row"><span class="stat-lbl">Variazione</span><span class="stat-val" style="color:${dCol}">${dSign}${delta.toLocaleString('it-IT')}</span></div>
+      <div style="font-size:.75rem;color:${dCol};margin-top:.4rem">${dNote}</div>`;
+
+    resEl.style.display = 'block';
+  } catch(e) {
+    loadEl.style.display = 'none';
+    errEl.textContent = 'Errore di rete: ' + e.message;
+    errEl.style.display = 'block';
+  }
+}
+
 // ── Analytics ─────────────────────────────────────────────────────────────
 async function loadAnalytics() {
   const res = await fetch('/api/analytics');
@@ -1199,6 +1334,25 @@ function renderDashboard() {
   const sp = d.total_value ? (d.stock_value / d.total_value * 100).toFixed(0) : 0;
   const bp = d.total_value ? (d.bond_value  / d.total_value * 100).toFixed(0) : 0;
   document.getElementById('kpi-split').textContent = sp + '% / ' + bp + '%';
+
+  // Period P&L
+  function setPeriodKpi(valId, pctId, euros, pct) {
+    const el = document.getElementById(valId);
+    const sub = document.getElementById(pctId);
+    if (euros != null) {
+      el.textContent  = fmtE(euros);
+      el.className    = 'kpi-val ' + pCls(euros);
+      sub.textContent = fmtP(pct);
+      sub.style.color = '';
+    } else {
+      el.textContent  = '—';
+      el.className    = 'kpi-val';
+      sub.textContent = 'apri Analytics per calcolare';
+      sub.style.color = 'var(--muted)';
+    }
+  }
+  setPeriodKpi('kpi-pnl-3m',  'kpi-pnl-3m-pct',  d.total_pnl_3m,  d.total_pnl_3m_pct);
+  setPeriodKpi('kpi-pnl-12m', 'kpi-pnl-12m-pct', d.total_pnl_12m, d.total_pnl_12m_pct);
 
   const now = new Date();
   document.getElementById('dash-updated').textContent =
@@ -1274,6 +1428,8 @@ function renderAnalyticsTable() {
       <td class="num">${e.avg_buy_price != null ? fmtN.format(e.avg_buy_price) : '—'}</td>
       <td class="num ${pCls(e.since_buy_euro)}">${fmtE(e.since_buy_euro)}</td>
       <td class="num ${pCls(e.since_buy_pct)}">${fmtP(e.since_buy_pct)}</td>
+      <td class="num ${pCls(e.pnl_3m_pct)}">${e.pnl_3m_pct  != null ? (e.pnl_3m_pct  >= 0 ? '+' : '') + fmtN.format(e.pnl_3m_pct)  + '%' : '—'}</td>
+      <td class="num ${pCls(e.pnl_12m_pct)}">${e.pnl_12m_pct != null ? (e.pnl_12m_pct >= 0 ? '+' : '') + fmtN.format(e.pnl_12m_pct) + '%' : '—'}</td>
       <td class="num">${e.portfolio_weight != null ? fmtN.format(e.portfolio_weight)+'%' : '—'}</td>
       <td class="num" style="color:var(--text)">${cw != null ? fmtN.format(cw)+'%' : '—'}</td>
       <td class="num">${tw != null ? fmtN.format(tw)+'%' : '—'}</td>
