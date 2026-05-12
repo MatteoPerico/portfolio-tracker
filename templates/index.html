@@ -577,6 +577,7 @@
           <thead><tr>
             <th>Ticker</th><th>Tipo</th><th>Valore</th><th>Investito</th>
             <th>P&amp;L €</th><th>P&amp;L %</th>
+            <th>3 mesi</th><th>12 mesi</th>
             <th>Peso portafoglio</th><th>Peso / classe</th><th>Target</th><th>Δ Target</th>
           </tr></thead>
           <tbody></tbody>
@@ -1395,6 +1396,8 @@ function renderDashTable(etfs) {
       <td class="num">${fmtE(e.cost_basis)}</td>
       <td class="num ${pCls(e.since_buy_euro)}">${fmtE(e.since_buy_euro)}</td>
       <td class="num ${pCls(e.since_buy_pct)}">${fmtP(e.since_buy_pct)}</td>
+      <td class="num ${pCls(e.pnl_3m_pct)}">${e.pnl_3m_pct  != null ? (e.pnl_3m_pct  >= 0 ? '+' : '') + fmtN.format(e.pnl_3m_pct)  + '%' : '—'}</td>
+      <td class="num ${pCls(e.pnl_12m_pct)}">${e.pnl_12m_pct != null ? (e.pnl_12m_pct >= 0 ? '+' : '') + fmtN.format(e.pnl_12m_pct) + '%' : '—'}</td>
       <td class="num">${e.portfolio_weight != null ? fmtN.format(e.portfolio_weight)+'%' : '—'}</td>
       <td class="num" style="color:var(--text)">${cw != null ? fmtN.format(cw)+'%' : '—'}</td>
       <td class="num">${tw != null ? fmtN.format(tw)+'%' : '—'}</td>
