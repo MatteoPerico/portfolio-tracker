@@ -476,6 +476,24 @@
     .stat-row { display: flex; justify-content: space-between; align-items: center; margin: .4rem 0; }
     .stat-lbl { font-size: .78rem; color: var(--muted2); }
     .stat-val { font-family: var(--mono); font-size: .88rem; font-weight: 600; }
+
+    /* ── Privacy mode ────────────────────────────────────────────────────── */
+    body.privacy .money {
+      color: transparent !important;
+      text-shadow: 0 0 10px rgba(200,208,224,.3);
+      user-select: none;
+      transition: text-shadow .2s, color .2s;
+    }
+    .privacy-btn {
+      display: flex; align-items: center; gap: .5rem;
+      background: none; border: none; cursor: pointer;
+      color: var(--muted); font-size: .75rem;
+      padding: .35rem .5rem; border-radius: var(--radius-sm);
+      transition: color .15s, background .15s;
+      width: 100%;
+    }
+    .privacy-btn:hover { color: var(--text2); background: var(--surface2); }
+    .privacy-btn svg { flex-shrink: 0; }
   </style>
 </head>
 <body>
@@ -509,6 +527,14 @@
       <span class="nav-icon">+</span><span>Nuovo acquisto</span>
     </a>
   </nav>
+  <div class="sidebar-footer">
+    <button class="privacy-btn" id="privacy-toggle" onclick="togglePrivacy()">
+      <svg id="eye-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>
+      </svg>
+      <span id="privacy-label">Nascondi importi</span>
+    </button>
+  </div>
 </aside>
 
 <!-- ── Main ────────────────────────────────────────────────────────────────── -->
@@ -964,6 +990,22 @@ let transactionsData = [];
 let geoData = null;
 const CHARTS = {};
 
+// ── Privacy toggle ──────────────────────────────────────────────────────────
+const EYE_OPEN  = '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>';
+const EYE_SHUT  = '<path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/>';
+let privacyOn = localStorage.getItem('privacy') === '1';
+function applyPrivacy() {
+  document.body.classList.toggle('privacy', privacyOn);
+  document.getElementById('eye-icon').innerHTML = privacyOn ? EYE_SHUT : EYE_OPEN;
+  document.getElementById('privacy-label').textContent = privacyOn ? 'Mostra importi' : 'Nascondi importi';
+}
+function togglePrivacy() {
+  privacyOn = !privacyOn;
+  localStorage.setItem('privacy', privacyOn ? '1' : '0');
+  applyPrivacy();
+}
+applyPrivacy();
+
 // ── Navigation ─────────────────────────────────────────────────────────────
 function navigate(page) {
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
@@ -982,7 +1024,7 @@ document.querySelectorAll('.nav-item[data-page]').forEach(el => {
 
 // ── Formatters ─────────────────────────────────────────────────────────────
 const fmtN = new Intl.NumberFormat('it-IT', {minimumFractionDigits:2, maximumFractionDigits:2});
-const fmtE = v => v != null ? '€\u202f' + fmtN.format(v) : '—';
+const fmtE = v => v != null ? `<span class="money">€ ${fmtN.format(v)}</span>` : '—';
 const fmtP = v => v != null ? (v >= 0 ? '+' : '') + fmtN.format(v) + '%' : '—';
 const pCls = v => v > 0.05 ? 'up' : v < -0.05 ? 'down' : '';
 
@@ -1322,13 +1364,13 @@ function renderDashboard() {
   const d = analyticsData;
   if (!d) return;
 
-  document.getElementById('kpi-total').textContent = fmtE(d.total_value);
-  document.getElementById('kpi-cost').textContent  = fmtE(d.total_cost);
+  document.getElementById('kpi-total').innerHTML = fmtE(d.total_value);
+  document.getElementById('kpi-cost').innerHTML  = fmtE(d.total_cost);
 
   const pnlEl = document.getElementById('kpi-pnl');
   pnlEl.textContent = fmtP(d.total_pnl_pct);
   pnlEl.className = 'kpi-val ' + pCls(d.total_pnl);
-  document.getElementById('kpi-pnl-pct').textContent = fmtE(d.total_pnl);
+  document.getElementById('kpi-pnl-pct').innerHTML = fmtE(d.total_pnl);
 
   const sp = d.total_value ? (d.stock_value / d.total_value * 100).toFixed(0) : 0;
   const bp = d.total_value ? (d.bond_value  / d.total_value * 100).toFixed(0) : 0;
@@ -1341,7 +1383,7 @@ function renderDashboard() {
     if (euros != null) {
       el.textContent  = fmtP(pct);
       el.className    = 'kpi-val ' + pCls(euros);
-      sub.textContent = fmtE(euros);
+      sub.innerHTML   = fmtE(euros);
       sub.style.color = '';
     } else {
       el.textContent  = '—';
