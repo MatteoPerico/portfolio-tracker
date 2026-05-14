@@ -869,7 +869,7 @@
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem">
         <div>
           <div style="font-size:.87rem;font-weight:700;color:var(--text)">Simula da target geografico</div>
-          <div style="font-size:.77rem;color:var(--muted);margin-top:.25rem">Modifica i pesi % per paese · gli altri si aggiornano proporzionalmente · solo azionario</div>
+          <div style="font-size:.77rem;color:var(--muted);margin-top:.25rem">Partenza dai target attuali · modifica un paese e gli altri si aggiornano proporzionalmente · solo azionario</div>
         </div>
         <div style="display:flex;gap:.5rem">
           <button class="btn btn-ghost" onclick="initGeoSim()">Reset</button>
@@ -1767,9 +1767,21 @@ function initGeoSim() {
   if (!geoData) return;
   geoSimTargets = {};
   _geoSimOrder  = [];
-  geoData.stock.current.countries.forEach(c => {
+  // Seed from current TARGET allocation; fall back to actual current if targets are empty
+  const source = geoData.stock.target.countries.length
+    ? geoData.stock.target.countries
+    : geoData.stock.current.countries;
+  source.forEach(c => {
     geoSimTargets[c.country] = parseFloat(c.exposure_pct.toFixed(3));
     _geoSimOrder.push(c.country);
+  });
+  // Add countries in actual current but absent from target (start them at 0)
+  const tgtSet = new Set(_geoSimOrder);
+  geoData.stock.current.countries.forEach(c => {
+    if (!tgtSet.has(c.country)) {
+      geoSimTargets[c.country] = 0;
+      _geoSimOrder.push(c.country);
+    }
   });
   // Normalise to exactly 100 %
   const tot = _geoSimOrder.reduce((s, c) => s + (geoSimTargets[c] || 0), 0);
@@ -1785,8 +1797,15 @@ function renderGeoSimInputs() {
   const container = document.getElementById('geo-sim-inputs');
   if (!container) return;
   container.innerHTML = '';
+  // Build lookup for actual current allocation (shown as reference, never changes)
+  const curMap = {};
+  if (geoData) geoData.stock.current.countries.forEach(c => { curMap[c.country] = c.exposure_pct; });
   _geoSimOrder.forEach((country, idx) => {
     const pct = geoSimTargets[country] || 0;
+    const cur = curMap[country];
+    const curStr = cur != null
+      ? `<span style="font-size:.71rem;color:var(--muted);font-family:var(--mono);white-space:nowrap">att:${cur.toFixed(1)}%</span>`
+      : '';
     container.insertAdjacentHTML('beforeend', `
       <div style="display:flex;align-items:center;gap:.4rem">
         <span style="font-size:.75rem;color:var(--text2);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${country}">${country}</span>
@@ -1796,6 +1815,7 @@ function renderGeoSimInputs() {
           oninput="onGeoSimChange(${idx}, this.value)"
           class="target-field">
         <span style="font-size:.74rem;color:var(--muted2);width:14px">%</span>
+        ${curStr}
       </div>`);
   });
   updateGeoSimTotal();
