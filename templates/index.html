@@ -1206,8 +1206,11 @@ async function loadDashPnL() {
     canvas.style.display = 'block';
 
     const labels = ts.map(d => d.date);
-    const pnl    = ts.map(d => parseFloat((d.value - d.invested).toFixed(2)));
-    const latest = pnl[pnl.length - 1] ?? 0;
+    const pnlPct = ts.map(d => {
+      const i = d.invested;
+      return i > 0 ? parseFloat(((d.value - i) / i * 100).toFixed(3)) : 0;
+    });
+    const latest  = pnlPct[pnlPct.length - 1] ?? 0;
     const lineClr = latest >= 0 ? C.green : '#f87171';
 
     if (CHARTS['chart-dash-pnl']) CHARTS['chart-dash-pnl'].destroy();
@@ -1217,8 +1220,8 @@ async function loadDashPnL() {
         labels,
         datasets: [
           {
-            label: 'P&L',
-            data:  pnl,
+            label: 'P&L %',
+            data:  pnlPct,
             borderColor:     lineClr,
             backgroundColor: lineClr + '28',
             fill:    'origin',
@@ -1229,14 +1232,14 @@ async function loadDashPnL() {
           },
           // Zero reference line
           {
-            data:       labels.map(() => 0),
+            data:        labels.map(() => 0),
             borderColor: 'rgba(200,208,224,.18)',
-            borderDash: [4, 4],
+            borderDash:  [4, 4],
             borderWidth: 1,
             pointRadius: 0,
-            fill: false,
-            parsing: false,
-            label: '',
+            fill:        false,
+            parsing:     false,
+            label:       '',
           },
         ],
       },
@@ -1250,11 +1253,11 @@ async function loadDashPnL() {
               title: items => items[0]?.label ?? '',
               label: ctx => {
                 if (ctx.datasetIndex !== 0) return null;
-                const v = ctx.raw;
-                const invested = ts[ctx.dataIndex]?.invested || 1;
-                const pct = (v / invested * 100).toFixed(1);
-                const sign = v >= 0 ? '+' : '';
-                return ` P&L: ${sign}€ ${fmtN.format(v)}  (${sign}${pct}%)`;
+                const pct  = ctx.raw;
+                const sign = pct >= 0 ? '+' : '';
+                const absEur = ts[ctx.dataIndex]?.value - ts[ctx.dataIndex]?.invested;
+                const eurStr = absEur != null ? `  (${sign}€ ${fmtN.format(absEur)})` : '';
+                return ` P&L: ${sign}${fmtN.format(pct)}%${eurStr}`;
               },
               filter: item => item.datasetIndex === 0,
             },
@@ -1267,11 +1270,7 @@ async function loadDashPnL() {
           },
           y: {
             ticks: {
-              callback: v => {
-                const abs = Math.abs(v);
-                const fmt = abs >= 1000 ? (v/1000).toFixed(1)+'k' : v.toFixed(0);
-                return (v >= 0 ? '+' : '') + '€' + fmt;
-              },
+              callback: v => (v >= 0 ? '+' : '') + fmtN.format(v) + '%',
               font: { size: 10 }, color: C.muted,
             },
             grid: { color: C.border },
