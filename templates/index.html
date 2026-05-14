@@ -543,7 +543,7 @@
       <div class="kpi">
         <div class="kpi-label">P&amp;L totale</div>
         <div class="kpi-val" id="kpi-pnl">—</div>
-        <div class="kpi-sub" id="kpi-pnl-pct">—</div>
+        <div class="kpi-sub" id="kpi-pnl-pct" style="font-family:var(--mono)">—</div>
       </div>
       <div class="kpi">
         <div class="kpi-label">P&amp;L 12 mesi</div>
@@ -1326,9 +1326,9 @@ function renderDashboard() {
   document.getElementById('kpi-cost').textContent  = fmtE(d.total_cost);
 
   const pnlEl = document.getElementById('kpi-pnl');
-  pnlEl.textContent = fmtE(d.total_pnl);
+  pnlEl.textContent = fmtP(d.total_pnl_pct);
   pnlEl.className = 'kpi-val ' + pCls(d.total_pnl);
-  document.getElementById('kpi-pnl-pct').textContent = fmtP(d.total_pnl_pct);
+  document.getElementById('kpi-pnl-pct').textContent = fmtE(d.total_pnl);
 
   const sp = d.total_value ? (d.stock_value / d.total_value * 100).toFixed(0) : 0;
   const bp = d.total_value ? (d.bond_value  / d.total_value * 100).toFixed(0) : 0;
@@ -1339,14 +1339,14 @@ function renderDashboard() {
     const el = document.getElementById(valId);
     const sub = document.getElementById(pctId);
     if (euros != null) {
-      el.textContent  = fmtE(euros);
+      el.textContent  = fmtP(pct);
       el.className    = 'kpi-val ' + pCls(euros);
-      sub.textContent = fmtP(pct);
+      sub.textContent = fmtE(euros);
       sub.style.color = '';
     } else {
       el.textContent  = '—';
       el.className    = 'kpi-val';
-      sub.textContent = 'apri Analytics per calcolare';
+      sub.textContent = 'apri Analytics';
       sub.style.color = 'var(--muted)';
     }
   }
