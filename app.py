@@ -1,5 +1,6 @@
 from flask import Flask, render_template, request, jsonify
 import sqlite3
+import os
 from datetime import datetime
 import urllib.request
 import json as _json
@@ -884,6 +885,153 @@ def simulate_etf():
         'hhi_delta':       simulated_hhi - current_hhi,
         'data_points':     len(history),
         'currency':        currency,
+    })
+
+
+# ── Google Drive backup ───────────────────────────────────────────────────────
+
+_drive_oauth_states: set = set()   # CSRF state tokens in-flight
+
+
+@app.route('/api/drive/status', methods=['GET'])
+def drive_status():
+    if not os.path.exists('credentials.json'):
+        return jsonify({'status': 'no_credentials'})
+    try:
+        import drive_utils
+        creds = drive_utils.get_creds()
+        return jsonify({'status': 'connected' if creds else 'not_connected'})
+    except ImportError:
+        return jsonify({'status': 'not_installed',
+                        'message': 'Esegui: pip install google-auth google-auth-oauthlib google-auth-httplib2 google-api-python-client'})
+
+
+@app.route('/api/drive/auth', methods=['GET'])
+def drive_auth():
+    import drive_utils
+    auth_url, state = drive_utils.get_auth_url()
+    _drive_oauth_states.add(state)
+    return jsonify({'auth_url': auth_url})
+
+
+@app.route('/api/drive/callback')
+def drive_callback():
+    import drive_utils
+    code  = request.args.get('code', '')
+    state = request.args.get('state', '')
+    error = request.args.get('error', '')
+    if error:
+        return f'<p>Accesso negato: {error}</p>', 400
+    if state not in _drive_oauth_states:
+        return '<p>Stato OAuth non valido.</p>', 400
+    _drive_oauth_states.discard(state)
+    try:
+        drive_utils.exchange_code(code, state)
+    except Exception as e:
+        return f'<p>Errore durante l\'autenticazione: {e}</p>', 500
+    return '''<!DOCTYPE html><html><body style="font-family:sans-serif;background:#0b0e17;color:#c8d0e0;display:flex;align-items:center;justify-content:center;height:100vh;margin:0">
+    <div style="text-align:center">
+      <div style="font-size:2rem;margin-bottom:.5rem">✓</div>
+      <div style="font-size:1.1rem;font-weight:600;color:#34d399">Google Drive connesso</div>
+      <div style="font-size:.85rem;color:#64748b;margin-top:.4rem">Puoi chiudere questa finestra</div>
+    </div>
+    <script>setTimeout(()=>window.close(),1500);</script>
+    </body></html>'''
+
+
+@app.route('/api/drive/revoke', methods=['POST'])
+def drive_revoke():
+    import drive_utils
+    drive_utils.revoke_creds()
+    return jsonify({'ok': True})
+
+
+@app.route('/api/drive/backup', methods=['POST'])
+def drive_backup():
+    import drive_utils
+    creds = drive_utils.get_creds()
+    if not creds:
+        return jsonify({'error': 'Non autenticato con Google Drive'}), 401
+    try:
+        service   = drive_utils.build_service(creds)
+        folder_id = drive_utils.get_or_create_folder(service)
+        file_info = drive_utils.upload_backup(service, folder_id, config.DB_PATH)
+        return jsonify({'ok': True, 'file': file_info})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/drive/backups', methods=['GET'])
+def drive_list_backups():
+    import drive_utils
+    creds = drive_utils.get_creds()
+    if not creds:
+        return jsonify({'error': 'Non autenticato'}), 401
+    try:
+        service   = drive_utils.build_service(creds)
+        folder_id = drive_utils.get_or_create_folder(service)
+        files     = drive_utils.list_backups(service, folder_id)
+        return jsonify({'files': files})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/drive/restore', methods=['POST'])
+def drive_restore():
+    file_id = (request.json or {}).get('file_id')
+    if not file_id:
+        return jsonify({'error': 'file_id richiesto'}), 400
+    import drive_utils
+    creds = drive_utils.get_creds()
+    if not creds:
+        return jsonify({'error': 'Non autenticato'}), 401
+    try:
+        service = drive_utils.build_service(creds)
+        data    = drive_utils.download_backup(service, file_id)
+    except Exception as e:
+        return jsonify({'error': f'Download fallito: {e}'}), 500
+
+    db = get_db()
+    try:
+        db.execute('BEGIN')
+        db.execute('DELETE FROM transactions')
+        db.execute('DELETE FROM etf_info')
+        db.execute('DELETE FROM geo_allocation')
+        db.execute('DELETE FROM country_region')
+
+        for r in data.get('transactions', []):
+            db.execute(
+                '''INSERT INTO transactions
+                   (id,date,time,ticker,op_type,amount_euro,price_euro,fees_euro,quantity,isin,note)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)''',
+                (r.get('id'), r['date'], r.get('time',''), r['ticker'], r['op_type'],
+                 r.get('amount_euro'), r.get('price_euro'), r.get('fees_euro'),
+                 r.get('quantity'), r.get('isin',''), r.get('note',''))
+            )
+        for r in data.get('etf_info', []):
+            db.execute(
+                '''INSERT OR REPLACE INTO etf_info
+                   (ticker,name,isin,type,currency,ter,current_price_euro,target_weight,last_price_update)
+                   VALUES (?,?,?,?,?,?,?,?,?)''',
+                (r.get('ticker'), r.get('name'), r.get('isin'), r.get('type'),
+                 r.get('currency'), r.get('ter'), r.get('current_price_euro'),
+                 r.get('target_weight'), r.get('last_price_update'))
+            )
+        for r in data.get('geo_allocation', []):
+            db.execute('INSERT OR REPLACE INTO geo_allocation (ticker,country,etf_weight) VALUES (?,?,?)',
+                       (r['ticker'], r['country'], r['etf_weight']))
+        for r in data.get('country_region', []):
+            db.execute('INSERT OR REPLACE INTO country_region (country,region) VALUES (?,?)',
+                       (r['country'], r['region']))
+        db.commit()
+    except Exception as e:
+        db.execute('ROLLBACK')
+        return jsonify({'error': f'Ripristino fallito: {e}'}), 500
+
+    return jsonify({
+        'ok': True,
+        'transactions': len(data.get('transactions', [])),
+        'exported_at':  data.get('exported_at', ''),
     })
 
 

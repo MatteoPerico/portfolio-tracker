@@ -526,6 +526,10 @@
     <a class="nav-item" data-page="add">
       <span class="nav-icon">+</span><span>Nuovo acquisto</span>
     </a>
+    <div class="nav-label" style="margin-top:.5rem">Sistema</div>
+    <a class="nav-item" data-page="backup">
+      <span class="nav-icon">☁</span><span>Backup</span>
+    </a>
   </nav>
   <div class="sidebar-footer">
     <button class="privacy-btn" id="privacy-toggle" onclick="togglePrivacy()">
@@ -1013,6 +1017,76 @@
     </div>
   </div>
 
+  <!-- BACKUP ──────────────────────────────────────────────────────────────── -->
+  <div id="page-backup" class="page">
+    <div class="page-header">
+      <div>
+        <div class="page-title">Backup &amp; Ripristino</div>
+        <div class="page-sub">Salva i tuoi dati su Google Drive · ripristina da un backup precedente</div>
+      </div>
+    </div>
+
+    <!-- Connection card -->
+    <div class="card mb2" id="drive-conn-card">
+      <div style="display:flex;align-items:center;gap:.75rem;margin-bottom:1rem">
+        <span style="font-size:1.4rem;line-height:1">☁</span>
+        <div>
+          <div style="font-size:.87rem;font-weight:700;color:var(--text)">Google Drive</div>
+          <div id="drive-status-text" style="font-size:.77rem;color:var(--muted);margin-top:.1rem">Controllo stato…</div>
+        </div>
+        <span id="drive-status-dot" style="width:8px;height:8px;border-radius:50%;background:var(--muted);margin-left:auto;flex-shrink:0"></span>
+      </div>
+
+      <!-- Not installed -->
+      <div id="drive-not-installed" style="display:none">
+        <div class="card" style="background:var(--surface2);border:none;padding:.9rem;font-size:.8rem;color:var(--muted2)">
+          <div style="font-weight:600;color:var(--amber);margin-bottom:.4rem">Librerie Google non installate</div>
+          <div>Esegui nel terminale:</div>
+          <pre style="background:var(--bg);border-radius:6px;padding:.6rem .8rem;margin:.4rem 0 0;font-size:.78rem;overflow-x:auto">pip install google-auth google-auth-oauthlib google-auth-httplib2 google-api-python-client</pre>
+        </div>
+      </div>
+
+      <!-- No credentials.json -->
+      <div id="drive-no-creds" style="display:none">
+        <div class="card" style="background:var(--surface2);border:none;padding:.9rem;font-size:.8rem;color:var(--muted2)">
+          <div style="font-weight:600;color:var(--amber);margin-bottom:.5rem">Setup Google Cloud (una tantum)</div>
+          <ol style="margin:0;padding-left:1.2rem;line-height:1.9">
+            <li>Vai su <a href="https://console.cloud.google.com/" target="_blank" style="color:var(--indigo)">console.cloud.google.com</a> → crea un progetto</li>
+            <li>Cerca "Google Drive API" → <strong>Abilita</strong></li>
+            <li>Menu <em>Credenziali</em> → <em>Crea credenziali</em> → <em>ID client OAuth 2.0</em></li>
+            <li>Tipo applicazione: <strong>Applicazione web</strong></li>
+            <li>URI di reindirizzamento autorizzato: <code style="background:var(--bg);padding:.1rem .35rem;border-radius:3px">http://localhost:5001/api/drive/callback</code></li>
+            <li>Scarica il JSON → rinominalo <code style="background:var(--bg);padding:.1rem .35rem;border-radius:3px">credentials.json</code> e mettilo nella cartella del progetto</li>
+            <li>Ricarica questa pagina</li>
+          </ol>
+        </div>
+      </div>
+
+      <!-- Not connected -->
+      <div id="drive-not-connected" style="display:none">
+        <button class="btn btn-primary" onclick="connectDrive()">Connetti Google Drive</button>
+      </div>
+
+      <!-- Connected -->
+      <div id="drive-connected" style="display:none;display:flex;gap:.5rem;flex-wrap:wrap">
+        <button class="btn btn-primary" id="btn-backup-now" onclick="createBackup()">⬆ Crea backup ora</button>
+        <button class="btn btn-ghost" onclick="disconnectDrive()" style="color:var(--muted)">Disconnetti</button>
+        <span id="backup-msg" style="font-size:.8rem;align-self:center"></span>
+      </div>
+    </div>
+
+    <!-- Backups list -->
+    <div class="card" id="drive-backups-card" style="display:none">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem">
+        <div class="card-title" style="margin:0">Backup disponibili</div>
+        <button class="btn btn-ghost" style="font-size:.78rem" onclick="loadBackups()">↻ Aggiorna</button>
+      </div>
+      <div id="backups-list">
+        <div style="color:var(--muted);font-size:.82rem">Caricamento…</div>
+      </div>
+    </div>
+  </div>
+
 </main><!-- main -->
 
 <!-- ── Price modal ──────────────────────────────────────────────────────────── -->
@@ -1097,6 +1171,7 @@ function navigate(page) {
   if (page === 'dashboard' || page === 'analytics') loadAnalytics();
   if (page === 'dashboard') loadDashPnL();
   if (page === 'analytics') loadAnalyticsExtras();
+  if (page === 'backup')    loadDriveStatus();
   if (page === 'transactions') loadTransactions();
   if (page === 'geo') loadGeo();
   if (page === 'target') { if (!geoData) loadGeo(); else { renderTargetInputs(); if (!geoSimTargets) initGeoSim(); } }
@@ -2189,6 +2264,123 @@ async function applyGeoSim() {
   msg.style.color = 'var(--green)';
   setTimeout(() => { msg.textContent = ''; }, 3000);
   await loadGeo();
+}
+
+// ── Backup (Google Drive) ─────────────────────────────────────────────────────
+async function loadDriveStatus() {
+  const res  = await fetch('/api/drive/status');
+  const data = await res.json();
+  const dot  = document.getElementById('drive-status-dot');
+  const txt  = document.getElementById('drive-status-text');
+  const ids  = ['drive-not-installed','drive-no-creds','drive-not-connected','drive-connected'];
+  ids.forEach(id => { const el = document.getElementById(id); if(el) el.style.display = 'none'; });
+
+  if (data.status === 'not_installed') {
+    txt.textContent = 'Librerie non installate';
+    dot.style.background = 'var(--amber)';
+    document.getElementById('drive-not-installed').style.display = '';
+  } else if (data.status === 'no_credentials') {
+    txt.textContent = 'credentials.json mancante';
+    dot.style.background = 'var(--amber)';
+    document.getElementById('drive-no-creds').style.display = '';
+  } else if (data.status === 'not_connected') {
+    txt.textContent = 'Non connesso';
+    dot.style.background = 'var(--muted)';
+    document.getElementById('drive-not-connected').style.display = '';
+  } else if (data.status === 'connected') {
+    txt.textContent = 'Connesso';
+    dot.style.background = 'var(--green)';
+    document.getElementById('drive-connected').style.display = 'flex';
+    document.getElementById('drive-backups-card').style.display = '';
+    loadBackups();
+  }
+}
+
+async function connectDrive() {
+  const res  = await fetch('/api/drive/auth');
+  const data = await res.json();
+  const popup = window.open(data.auth_url, 'driveAuth',
+    'width=520,height=640,left=200,top=100');
+  const poll = setInterval(async () => {
+    if (popup.closed) {
+      clearInterval(poll);
+      await loadDriveStatus();
+    }
+  }, 1000);
+}
+
+async function disconnectDrive() {
+  if (!confirm('Disconnetti Google Drive? Il file token.json verrà eliminato.')) return;
+  await fetch('/api/drive/revoke', { method: 'POST' });
+  document.getElementById('drive-backups-card').style.display = 'none';
+  await loadDriveStatus();
+}
+
+async function createBackup() {
+  const btn = document.getElementById('btn-backup-now');
+  const msg = document.getElementById('backup-msg');
+  btn.disabled = true;
+  btn.textContent = 'Caricamento…';
+  msg.textContent = '';
+  try {
+    const res  = await fetch('/api/drive/backup', { method: 'POST' });
+    const data = await res.json();
+    if (data.error) { msg.textContent = '✗ ' + data.error; msg.style.color = 'var(--red)'; return; }
+    msg.textContent = `✓ ${data.file.name}`;
+    msg.style.color = 'var(--green)';
+    loadBackups();
+  } catch(e) {
+    msg.textContent = '✗ ' + e.message;
+    msg.style.color = 'var(--red)';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '⬆ Crea backup ora';
+    setTimeout(() => { msg.textContent = ''; }, 6000);
+  }
+}
+
+async function loadBackups() {
+  const container = document.getElementById('backups-list');
+  container.innerHTML = '<div style="color:var(--muted);font-size:.82rem">Caricamento…</div>';
+  try {
+    const res  = await fetch('/api/drive/backups');
+    const data = await res.json();
+    if (data.error) { container.innerHTML = `<div style="color:var(--red);font-size:.82rem">${data.error}</div>`; return; }
+    const files = data.files || [];
+    if (!files.length) { container.innerHTML = '<div style="color:var(--muted);font-size:.82rem">Nessun backup trovato.</div>'; return; }
+    container.innerHTML = '';
+    files.forEach((f, i) => {
+      const dt   = new Date(f.createdTime).toLocaleString('it-IT');
+      const kb   = f.size ? (parseInt(f.size)/1024).toFixed(1) + ' KB' : '';
+      container.insertAdjacentHTML('beforeend', `
+        <div style="display:flex;align-items:center;gap:.75rem;padding:.6rem 0;${i>0?'border-top:1px solid var(--border)':''}">
+          <div style="flex:1;min-width:0">
+            <div style="font-size:.82rem;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${f.name}">${f.name}</div>
+            <div style="font-size:.73rem;color:var(--muted);margin-top:.15rem">${dt}${kb?' · '+kb:''}</div>
+          </div>
+          <button class="btn btn-ghost" style="font-size:.76rem;padding:.3rem .7rem;flex-shrink:0"
+            onclick="restoreBackup('${f.id}','${f.name}')">↩ Ripristina</button>
+        </div>`);
+    });
+  } catch(e) {
+    container.innerHTML = `<div style="color:var(--red);font-size:.82rem">${e.message}</div>`;
+  }
+}
+
+async function restoreBackup(fileId, name) {
+  if (!confirm(`Ripristinare il backup:\n"${name}"?\n\nATTENZIONE: tutti i dati attuali verranno sovrascritti.`)) return;
+  const res  = await fetch('/api/drive/restore', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ file_id: fileId })
+  });
+  const data = await res.json();
+  if (data.error) { alert('Errore: ' + data.error); return; }
+  alert(`✓ Ripristino completato\n${data.transactions} transazioni importate\nEsportato il: ${data.exported_at}`);
+  // Reload all data
+  _perfCache = null;
+  await loadAnalytics();
+  loadDashPnL();
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────────

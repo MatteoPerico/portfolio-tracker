@@ -1,6 +1,10 @@
 # Secrets – never commit
 config.py
 
+# Google Drive OAuth tokens (contain private credentials)
+credentials.json
+token.json
+
 # Database
 portfolio.db
 
