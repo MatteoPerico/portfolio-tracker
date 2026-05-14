@@ -238,6 +238,7 @@
     .g2 { grid-template-columns: 1fr 1fr; }
     .g3 { grid-template-columns: 1fr 1fr 1fr; }
     .g4 { grid-template-columns: 1fr 1fr 1fr 1fr; }
+    .g6 { grid-template-columns: repeat(6, 1fr); }
     .g-3-1 { grid-template-columns: 3fr 1fr; }
     .g-5-7 { grid-template-columns: 5fr 7fr; }
     .g-4-8 { grid-template-columns: 4fr 8fr; }
@@ -433,6 +434,7 @@
       .brand-name, .brand-sub, .nav-item span:not(.nav-icon), .sidebar-footer span { display: none; }
       .main { padding: 1.25rem; }
       .g4, .g3 { grid-template-columns: 1fr 1fr; }
+      .g6 { grid-template-columns: 1fr 1fr 1fr; }
       .g-5-7, .g-4-8, .g-3-1, .g-3-3-6 { grid-template-columns: 1fr; }
     }
     @media (max-width: 600px) {
@@ -522,7 +524,7 @@
       <button class="btn btn-ghost" id="btn-refresh-prices" onclick="refreshPrices()">↻ Aggiorna prezzi</button>
     </div>
 
-    <div class="grid g4 mb">
+    <div class="grid g6 mb2">
       <div class="kpi">
         <div class="kpi-label">Valore portafoglio</div>
         <div class="kpi-val" id="kpi-total">—</div>
@@ -543,19 +545,15 @@
         <div class="kpi-val" id="kpi-split">—</div>
         <div class="kpi-sub">azionario / obbligazionario</div>
       </div>
-    </div>
-    <div class="grid g4 mb2">
-      <div></div>
-      <div></div>
       <div class="kpi">
-        <div class="kpi-label">P&amp;L ultimi 3 mesi</div>
+        <div class="kpi-label">P&amp;L 3 mesi</div>
         <div class="kpi-val" id="kpi-pnl-3m">—</div>
-        <div class="kpi-sub" id="kpi-pnl-3m-pct" style="font-size:.72rem;color:var(--muted)">carica Analytics per i dati</div>
+        <div class="kpi-sub" id="kpi-pnl-3m-pct" style="font-size:.72rem;color:var(--muted)">apri Analytics</div>
       </div>
       <div class="kpi">
-        <div class="kpi-label">P&amp;L ultimi 12 mesi</div>
+        <div class="kpi-label">P&amp;L 12 mesi</div>
         <div class="kpi-val" id="kpi-pnl-12m">—</div>
-        <div class="kpi-sub" id="kpi-pnl-12m-pct" style="font-size:.72rem;color:var(--muted)">carica Analytics per i dati</div>
+        <div class="kpi-sub" id="kpi-pnl-12m-pct" style="font-size:.72rem;color:var(--muted)">apri Analytics</div>
       </div>
     </div>
 
