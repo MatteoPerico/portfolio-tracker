@@ -863,7 +863,47 @@
     <div style="margin-top:1rem;display:flex;align-items:center;gap:.75rem">
       <span id="tgt-save-msg" style="font-size:.8rem"></span>
     </div>
-  </div>
+
+    <!-- ── Geo Simulation ─────────────────────────────────────────────────── -->
+    <div class="card" style="margin-top:1.5rem">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem">
+        <div>
+          <div style="font-size:.87rem;font-weight:700;color:var(--text)">Simula da target geografico</div>
+          <div style="font-size:.77rem;color:var(--muted);margin-top:.25rem">Modifica i pesi % per paese · gli altri si aggiornano proporzionalmente · solo azionario</div>
+        </div>
+        <div style="display:flex;gap:.5rem">
+          <button class="btn btn-ghost" onclick="initGeoSim()">Reset</button>
+          <button class="btn btn-primary" id="geo-sim-calc-btn" onclick="runGeoSim()">Calcola bilanciamento</button>
+        </div>
+      </div>
+
+      <div id="geo-sim-inputs" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:.45rem 1.2rem;margin-bottom:.75rem"></div>
+
+      <div style="display:flex;align-items:center;gap:.5rem;font-size:.8rem">
+        <span style="color:var(--muted)">Totale:</span>
+        <span id="geo-sim-total" style="font-family:var(--mono);font-weight:600"></span>
+      </div>
+
+      <div id="geo-sim-results" style="display:none;margin-top:1.5rem;border-top:1px solid var(--border);padding-top:1.25rem">
+        <div style="font-size:.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:1rem">Bilanciamento proposto</div>
+        <div class="grid g2">
+          <div>
+            <div style="font-size:.75rem;color:var(--muted2);margin-bottom:.6rem;font-weight:600">Pesi ETF azionari</div>
+            <div id="geo-sim-etf-table"></div>
+          </div>
+          <div>
+            <div style="font-size:.75rem;color:var(--muted2);margin-bottom:.6rem;font-weight:600">Esposizione geografica implicita (top 15)</div>
+            <div id="geo-sim-implied"></div>
+          </div>
+        </div>
+        <div style="margin-top:1.25rem;display:flex;align-items:center;gap:.75rem">
+          <button class="btn btn-primary" onclick="applyGeoSim()">Applica pesi proposti</button>
+          <span id="geo-sim-msg" style="font-size:.8rem"></span>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /page-target -->
 
   <!-- ADD TRANSACTION ────────────────────────────────────────────────────── -->
   <div id="page-add" class="page">
@@ -1016,7 +1056,7 @@ function navigate(page) {
   if (page === 'analytics') loadAnalyticsExtras();
   if (page === 'transactions') loadTransactions();
   if (page === 'geo') loadGeo();
-  if (page === 'target') { if (!geoData) loadGeo(); else renderTargetInputs(); }
+  if (page === 'target') { if (!geoData) loadGeo(); else { renderTargetInputs(); if (!geoSimTargets) initGeoSim(); } }
 }
 document.querySelectorAll('.nav-item[data-page]').forEach(el => {
   el.addEventListener('click', e => { e.preventDefault(); navigate(el.dataset.page); });
@@ -1562,6 +1602,7 @@ async function loadGeo() {
   renderGeoCharts();
   renderGeoTables();
   renderTargetInputs();
+  initGeoSim();
 }
 
 function computeTargetGeo(assetClass) {
@@ -1715,6 +1756,165 @@ async function saveTargets() {
   msg.style.color = 'var(--green)';
   setTimeout(() => msg.textContent = '', 3000);
   loadGeo();
+}
+
+// ── Geo Simulation ───────────────────────────────────────────────────────────
+let geoSimTargets  = null;  // { country: pct }
+let _geoSimOrder   = [];    // stable country order for inputs
+let geoSimProposed = null;  // last result from /api/geo_to_etf
+
+function initGeoSim() {
+  if (!geoData) return;
+  geoSimTargets = {};
+  _geoSimOrder  = [];
+  geoData.stock.current.countries.forEach(c => {
+    geoSimTargets[c.country] = parseFloat(c.exposure_pct.toFixed(3));
+    _geoSimOrder.push(c.country);
+  });
+  // Normalise to exactly 100 %
+  const tot = _geoSimOrder.reduce((s, c) => s + (geoSimTargets[c] || 0), 0);
+  if (tot > 0) _geoSimOrder.forEach(c => { geoSimTargets[c] = geoSimTargets[c] / tot * 100; });
+  geoSimProposed = null;
+  const res = document.getElementById('geo-sim-results');
+  if (res) res.style.display = 'none';
+  renderGeoSimInputs();
+}
+
+function renderGeoSimInputs() {
+  if (!geoSimTargets || !_geoSimOrder.length) return;
+  const container = document.getElementById('geo-sim-inputs');
+  if (!container) return;
+  container.innerHTML = '';
+  _geoSimOrder.forEach((country, idx) => {
+    const pct = geoSimTargets[country] || 0;
+    container.insertAdjacentHTML('beforeend', `
+      <div style="display:flex;align-items:center;gap:.4rem">
+        <span style="font-size:.75rem;color:var(--text2);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${country}">${country}</span>
+        <input id="gsim-${idx}" type="number" min="0" max="100" step="0.1"
+          value="${pct.toFixed(2)}"
+          style="width:68px;text-align:right;font-size:.81rem;padding:.2rem .35rem"
+          oninput="onGeoSimChange(${idx}, this.value)"
+          class="target-field">
+        <span style="font-size:.74rem;color:var(--muted2);width:14px">%</span>
+      </div>`);
+  });
+  updateGeoSimTotal();
+}
+
+function onGeoSimChange(idx, rawVal) {
+  if (!geoSimTargets || !_geoSimOrder[idx]) return;
+  const changed = _geoSimOrder[idx];
+  const newVal  = Math.max(0, Math.min(100, parseFloat(rawVal) || 0));
+  const oldOthersSum = _geoSimOrder.reduce(
+    (s, c) => c === changed ? s : s + (geoSimTargets[c] || 0), 0);
+  const remaining = Math.max(0, 100 - newVal);
+  geoSimTargets[changed] = newVal;
+  if (oldOthersSum > 0) {
+    _geoSimOrder.forEach(c => {
+      if (c !== changed) geoSimTargets[c] = (geoSimTargets[c] || 0) / oldOthersSum * remaining;
+    });
+  }
+  // Refresh all other inputs
+  _geoSimOrder.forEach((c, i) => {
+    if (i !== idx) {
+      const el = document.getElementById('gsim-' + i);
+      if (el) el.value = (geoSimTargets[c] || 0).toFixed(2);
+    }
+  });
+  updateGeoSimTotal();
+}
+
+function updateGeoSimTotal() {
+  if (!geoSimTargets) return;
+  const total = _geoSimOrder.reduce((s, c) => s + (geoSimTargets[c] || 0), 0);
+  const el = document.getElementById('geo-sim-total');
+  if (el) {
+    el.textContent = total.toFixed(2) + '%';
+    el.style.color = Math.abs(total - 100) < 0.5 ? 'var(--green)' : 'var(--amber)';
+  }
+}
+
+async function runGeoSim() {
+  if (!geoSimTargets) { initGeoSim(); return; }
+  const btn = document.getElementById('geo-sim-calc-btn');
+  if (btn) btn.textContent = 'Calcolo…';
+  try {
+    const res = await fetch('/api/geo_to_etf', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(geoSimTargets)
+    });
+    const data = await res.json();
+    if (data.error) { alert(data.error); return; }
+    geoSimProposed = data.weights;
+    renderGeoSimResults(data);
+    document.getElementById('geo-sim-results').style.display = '';
+    document.getElementById('geo-sim-msg').textContent = '';
+  } catch (e) {
+    alert('Errore: ' + e.message);
+  } finally {
+    if (btn) btn.textContent = 'Calcola bilanciamento';
+  }
+}
+
+function renderGeoSimResults(data) {
+  // ETF weights
+  const etfDiv = document.getElementById('geo-sim-etf-table');
+  etfDiv.innerHTML = '';
+  data.weights.forEach(e => {
+    const delta = e.proposed_weight - e.current_target;
+    const dCls  = delta > 0.05 ? 'up' : delta < -0.05 ? 'down' : '';
+    const dSign = delta >= 0 ? '+' : '';
+    etfDiv.insertAdjacentHTML('beforeend', `
+      <div style="display:flex;align-items:center;gap:.5rem;margin-bottom:.55rem">
+        <span style="font-weight:700;font-size:.84rem;width:52px;color:var(--text)">${e.ticker}</span>
+        <div style="flex:1;background:var(--surface3);border-radius:4px;height:6px">
+          <div style="height:6px;background:var(--indigo);border-radius:4px;width:${Math.min(e.proposed_weight,100)}%"></div>
+        </div>
+        <span style="font-family:var(--mono);font-size:.82rem;width:48px;text-align:right">${e.proposed_weight.toFixed(1)}%</span>
+        <span style="font-size:.74rem;width:46px;text-align:right" class="${dCls}">${dSign}${delta.toFixed(1)}%</span>
+      </div>`);
+  });
+
+  // Implied geo (top 15) with delta vs target
+  const implDiv = document.getElementById('geo-sim-implied');
+  implDiv.innerHTML = '';
+  const topN = data.implied_geo.slice(0, 15);
+  const maxP  = topN[0]?.pct || 1;
+  topN.forEach(c => {
+    const barW   = Math.round(c.pct / maxP * 100);
+    const target = geoSimTargets ? geoSimTargets[c.country] : null;
+    const diff   = target != null ? c.pct - target : null;
+    const dCls   = diff != null ? (diff > 0.3 ? 'up' : diff < -0.3 ? 'down' : '') : '';
+    const dStr   = diff != null
+      ? ` <span class="${dCls}" style="font-size:.7rem">(${diff >= 0 ? '+' : ''}${diff.toFixed(1)}%)</span>`
+      : '';
+    implDiv.insertAdjacentHTML('beforeend', `
+      <div style="display:flex;align-items:center;gap:.5rem;margin-bottom:.35rem">
+        <span style="font-size:.76rem;color:var(--text2);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${c.country}">${c.country}</span>
+        <div style="width:72px;background:var(--surface3);border-radius:3px;height:5px">
+          <div style="height:5px;background:var(--green);border-radius:3px;width:${barW}%"></div>
+        </div>
+        <span style="font-family:var(--mono);font-size:.78rem;width:44px;text-align:right">${c.pct.toFixed(2)}%</span>
+        ${dStr}
+      </div>`);
+  });
+}
+
+async function applyGeoSim() {
+  if (!geoSimProposed || !geoSimProposed.length) return;
+  const targets = {};
+  geoSimProposed.forEach(e => { targets[e.ticker] = e.proposed_weight; });
+  await fetch('/api/update_target', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(targets)
+  });
+  const msg = document.getElementById('geo-sim-msg');
+  msg.textContent = '✓ Target aggiornati';
+  msg.style.color = 'var(--green)';
+  setTimeout(() => { msg.textContent = ''; }, 3000);
+  await loadGeo();
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────────

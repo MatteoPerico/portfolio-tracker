@@ -371,6 +371,60 @@ def update_target():
     return jsonify({'ok': True})
 
 
+@app.route('/api/geo_to_etf', methods=['POST'])
+@login_required
+def geo_to_etf():
+    """Optimise STOCK ETF weights to best match a given country target allocation."""
+    country_targets = request.json or {}
+    if not country_targets:
+        return jsonify({'error': 'Nessun target fornito'}), 400
+
+    db = get_db()
+    stock_etfs = [r['ticker'] for r in db.execute(
+        "SELECT ticker FROM etf_info WHERE type='STOCK' AND ticker NOT IN ('VWCE','IVWL')"
+    ).fetchall()]
+    if not stock_etfs:
+        return jsonify({'error': 'Nessun ETF azionario trovato'}), 400
+
+    geo_rows = db.execute(
+        'SELECT ticker, country, etf_weight FROM geo_allocation WHERE ticker IN ({})'.format(
+            ','.join('?' * len(stock_etfs))
+        ), stock_etfs
+    ).fetchall()
+
+    geo_matrix = {}
+    for r in geo_rows:
+        geo_matrix.setdefault(r['ticker'], {})[r['country']] = r['etf_weight']
+
+    weights = _solve_geo_to_etf(geo_matrix, country_targets)
+
+    etf_info = {r['ticker']: dict(r) for r in db.execute(
+        "SELECT ticker, name, target_weight FROM etf_info WHERE type='STOCK' AND ticker NOT IN ('VWCE','IVWL')"
+    ).fetchall()}
+
+    result = sorted(
+        [{'ticker': t,
+          'name': etf_info.get(t, {}).get('name', t),
+          'proposed_weight': round(w * 100, 2),
+          'current_target':  round((etf_info.get(t, {}).get('target_weight') or 0) * 100, 2)}
+         for t, w in weights.items()],
+        key=lambda x: -x['proposed_weight']
+    )
+
+    # Implied geographic exposure from proposed weights
+    implied_geo: dict = {}
+    for t, w in weights.items():
+        for country, ef in geo_matrix.get(t, {}).items():
+            implied_geo[country] = implied_geo.get(country, 0.0) + w * ef
+    implied = sorted(
+        [{'country': c, 'pct': round(v * 100, 2)}
+         for c, v in implied_geo.items() if v > 0.0001],
+        key=lambda x: -x['pct']
+    )
+
+    return jsonify({'weights': result, 'implied_geo': implied})
+
+
 # ── API: timeseries ───────────────────────────────────────────────────────────
 
 @app.route('/api/timeseries', methods=['GET'])
@@ -485,6 +539,56 @@ def _log_returns(prices):
         if p0 and p1 and p0 > 0 and p1 > 0:
             out.append(_math.log(p1 / p0))
     return out
+
+
+def _proj_simplex(v):
+    """Project vector v onto the probability simplex {w: sum=1, w>=0}."""
+    n = len(v)
+    u = sorted(v, reverse=True)
+    cumsum = 0.0
+    rho = 0
+    for i in range(n):
+        cumsum += u[i]
+        if u[i] - (cumsum - 1.0) / (i + 1) > 0:
+            rho = i + 1
+    theta = (sum(u[:rho]) - 1.0) / rho
+    return [max(vi - theta, 0.0) for vi in v]
+
+
+def _solve_geo_to_etf(geo_matrix, country_targets, n_iter=3000):
+    """
+    Solve  min ||G·w - t||²  s.t.  sum(w)=1, w≥0  (projected gradient descent).
+
+    geo_matrix     : {ticker: {country: fraction}}  (fractions sum to 1 per ETF)
+    country_targets: {country: pct}  (any scale; normalised to sum=1 internally)
+    Returns        : {ticker: weight in [0,1], summing to 1}
+    """
+    tickers  = sorted(geo_matrix.keys())
+    # Only include countries that appear in at least one ETF
+    countries = [c for c in country_targets
+                 if any(c in geo_matrix[t] for t in tickers)]
+    n_e, n_c = len(tickers), len(countries)
+    if n_e == 0 or n_c == 0:
+        uni = 1.0 / max(n_e, 1)
+        return {t: uni for t in tickers}
+    # Build G matrix [n_c × n_e]
+    G = [[geo_matrix[t].get(c, 0.0) for t in tickers] for c in countries]
+    # Normalise target to probability vector
+    t_sum = sum(country_targets.get(c, 0.0) for c in countries)
+    if t_sum <= 0:
+        uni = 1.0 / n_e
+        return {t: uni for t in tickers}
+    T = [country_targets.get(c, 0.0) / t_sum for c in countries]
+    # Lipschitz constant L = 2·||G||²_F  →  step size lr = 1/L
+    L  = 2.0 * sum(G[c][e] ** 2 for c in range(n_c) for e in range(n_e)) + 1e-9
+    lr = 1.0 / L
+    w  = [1.0 / n_e] * n_e
+    for _ in range(n_iter):
+        Gw   = [sum(G[c][e] * w[e] for e in range(n_e)) for c in range(n_c)]
+        r    = [Gw[c] - T[c]        for c in range(n_c)]
+        grad = [2.0 * sum(G[c][e] * r[c] for c in range(n_c)) for e in range(n_e)]
+        w    = _proj_simplex([w[e] - lr * grad[e] for e in range(n_e)])
+    return {tickers[e]: round(w[e], 4) for e in range(n_e)}
 
 
 # ── API: refresh prices from Yahoo Finance ────────────────────────────────────
