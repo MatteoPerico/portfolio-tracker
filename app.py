@@ -890,7 +890,7 @@ def simulate_etf():
 
 # ── Google Drive backup ───────────────────────────────────────────────────────
 
-_drive_oauth_states: set = set()   # CSRF state tokens in-flight
+_drive_flows: dict = {}   # {state: flow} — keeps PKCE verifier alive until callback
 
 
 @app.route('/api/drive/status', methods=['GET'])
@@ -909,8 +909,8 @@ def drive_status():
 @app.route('/api/drive/auth', methods=['GET'])
 def drive_auth():
     import drive_utils
-    auth_url, state = drive_utils.get_auth_url()
-    _drive_oauth_states.add(state)
+    auth_url, state, flow = drive_utils.get_auth_url()
+    _drive_flows[state] = flow          # store flow to preserve PKCE verifier
     return jsonify({'auth_url': auth_url})
 
 
@@ -922,11 +922,11 @@ def drive_callback():
     error = request.args.get('error', '')
     if error:
         return f'<p>Accesso negato: {error}</p>', 400
-    if state not in _drive_oauth_states:
-        return '<p>Stato OAuth non valido.</p>', 400
-    _drive_oauth_states.discard(state)
+    flow = _drive_flows.pop(state, None)
+    if flow is None:
+        return '<p>Sessione OAuth scaduta. Riprova dalla pagina Backup.</p>', 400
     try:
-        drive_utils.exchange_code(code, state)
+        drive_utils.exchange_code(flow, code)   # reuse same flow → PKCE intact
     except Exception as e:
         return f'<p>Errore durante l\'autenticazione: {e}</p>', 500
     return '''<!DOCTYPE html><html><body style="font-family:sans-serif;background:#0b0e17;color:#c8d0e0;display:flex;align-items:center;justify-content:center;height:100vh;margin:0">

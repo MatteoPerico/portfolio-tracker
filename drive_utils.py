@@ -39,21 +39,19 @@ def build_service(creds):
 
 
 def get_auth_url():
-    """Return (auth_url, state) to start the OAuth consent flow."""
+    """Return (auth_url, state, flow) to start the OAuth consent flow.
+    The flow object must be kept alive until exchange_code() is called —
+    it holds the PKCE code_verifier generated internally."""
     from google_auth_oauthlib.flow import Flow
     flow = Flow.from_client_secrets_file(CREDS_PATH, scopes=SCOPES,
                                          redirect_uri=REDIRECT_URI)
     auth_url, state = flow.authorization_url(access_type='offline',
                                               prompt='consent')
-    return auth_url, state
+    return auth_url, state, flow
 
 
-def exchange_code(code, state):
-    """Exchange authorisation code for tokens and persist them."""
-    from google_auth_oauthlib.flow import Flow
-    flow = Flow.from_client_secrets_file(CREDS_PATH, scopes=SCOPES,
-                                         redirect_uri=REDIRECT_URI,
-                                         state=state)
+def exchange_code(flow, code):
+    """Exchange authorisation code using the original flow (preserves PKCE verifier)."""
     flow.fetch_token(code=code)
     with open(TOKEN_PATH, 'w') as f:
         f.write(flow.credentials.to_json())
