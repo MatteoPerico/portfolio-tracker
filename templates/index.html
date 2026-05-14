@@ -903,6 +903,40 @@
       </div>
     </div>
 
+    <!-- ── PAC Calculator ──────────────────────────────────────────────────── -->
+    <div class="card" style="margin-top:1.5rem">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:.75rem;margin-bottom:1.25rem">
+        <div>
+          <div style="font-size:.87rem;font-weight:700;color:var(--text)">Calcolatore PAC</div>
+          <div style="font-size:.77rem;color:var(--muted);margin-top:.25rem">Quanto investire per ETF in base al target · importi interi · prezzi costanti</div>
+        </div>
+        <div style="display:flex;align-items:flex-end;gap:1.25rem;flex-wrap:wrap">
+          <div class="field" style="margin:0">
+            <label class="form-lbl">Importo mensile (€)</label>
+            <input type="number" id="pac-amount" min="1" step="1" placeholder="es. 500"
+              style="width:140px" oninput="calcPAC()">
+          </div>
+          <div style="font-size:.77rem;color:var(--muted);margin-bottom:.35rem" id="pac-split-info"></div>
+        </div>
+      </div>
+
+      <div id="pac-results" style="display:none">
+        <div class="grid g2">
+          <div class="card" style="background:var(--surface2);border:none;padding:1rem">
+            <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.09em;color:var(--muted);margin-bottom:.25rem">Proporzionale al target</div>
+            <div style="font-size:.72rem;color:var(--muted2);margin-bottom:.8rem">Mantiene i pesi target mese per mese</div>
+            <div id="pac-prop-table"></div>
+          </div>
+          <div class="card" style="background:var(--surface2);border:none;padding:1rem">
+            <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.09em;color:var(--green);margin-bottom:.25rem">Ribilanciamento 12 mesi</div>
+            <div style="font-size:.72rem;color:var(--muted2);margin-bottom:.8rem">Porta il portafoglio al target entro 12 mesi *</div>
+            <div id="pac-rebal-table"></div>
+          </div>
+        </div>
+        <div style="font-size:.7rem;color:var(--muted2);margin-top:.75rem">* Prezzi costanti assunti. ETF già sopra-pesati non vengono venduti: il ribilanciamento avviene solo con nuovi acquisti.</div>
+      </div>
+    </div>
+
   </div><!-- /page-target -->
 
   <!-- ADD TRANSACTION ────────────────────────────────────────────────────── -->
@@ -1603,6 +1637,7 @@ async function loadGeo() {
   renderGeoTables();
   renderTargetInputs();
   initGeoSim();
+  calcPAC();
 }
 
 function computeTargetGeo(assetClass) {
@@ -1756,6 +1791,118 @@ async function saveTargets() {
   msg.style.color = 'var(--green)';
   setTimeout(() => msg.textContent = '', 3000);
   loadGeo();
+}
+
+// ── PAC Calculator ───────────────────────────────────────────────────────────
+function _integerAlloc(rawMap, total) {
+  /* Hamilton / largest-remainder: distribute `total` integer euros exactly. */
+  const int = Math.round(total);
+  let floorSum = 0;
+  const items = Object.entries(rawMap).map(([t, v]) => {
+    const f = Math.floor(v);
+    floorSum += f;
+    return { t, f, rem: v - f };
+  });
+  items.sort((a, b) => b.rem - a.rem);
+  const extra = int - floorSum;
+  const result = {};
+  items.forEach((it, i) => { result[it.t] = it.f + (i < extra ? 1 : 0); });
+  return result;
+}
+
+function calcPAC() {
+  const monthly = parseFloat(document.getElementById('pac-amount').value) || 0;
+  const resDiv  = document.getElementById('pac-results');
+  if (!geoData || monthly < 1) { resDiv.style.display = 'none'; return; }
+
+  const stockVal = geoData.stock_value || 0;
+  const bondVal  = geoData.bond_value  || 0;
+  const totalVal = stockVal + bondVal;
+  if (totalVal <= 0) return;
+
+  const stockRatio = stockVal / totalVal;
+  const bondRatio  = bondVal  / totalVal;
+
+  // Show split info
+  const splitEl = document.getElementById('pac-split-info');
+  if (splitEl) splitEl.textContent =
+    `Split attuale: ${(stockRatio*100).toFixed(0)}% az · ${(bondRatio*100).toFixed(0)}% obbl`;
+
+  // Build ETF list with current value + effective target fraction (of total portfolio)
+  const etfList = Object.entries(geoData.per_etf).map(([ticker, d]) => {
+    const classVal   = d.type === 'STOCK' ? stockVal : bondVal;
+    const classRatio = d.type === 'STOCK' ? stockRatio : bondRatio;
+    return {
+      ticker,
+      type:        d.type,
+      currentVal:  (d.current_pct / 100) * classVal,
+      targetFrac:  (d.target_pct  / 100) * classRatio,
+    };
+  });
+
+  // Normalise targetFrac to sum exactly to 1 (guards against rounding drift)
+  const tSum = etfList.reduce((s, e) => s + e.targetFrac, 0);
+  if (tSum > 0) etfList.forEach(e => { e.targetFrac /= tSum; });
+
+  // ── 1. Proportional PAC ──────────────────────────────────────────────────
+  const propRaw = {};
+  etfList.forEach(e => { propRaw[e.ticker] = e.targetFrac * monthly; });
+  const propAlloc = _integerAlloc(propRaw, monthly);
+
+  // ── 2. 12-month Rebalancing PAC ──────────────────────────────────────────
+  // After 12 months: total = totalVal + 12·monthly
+  // Required for ETF i: T_i·(totalVal+12M) – currentVal_i   (clipped at 0, no selling)
+  // Monthly needed:     required / 12
+  // Sum of clipped values may be < 12M → scale back to M
+  const totalAfter12 = totalVal + 12 * monthly;
+  const rebalRaw = {};
+  etfList.forEach(e => {
+    rebalRaw[e.ticker] = Math.max(0, (e.targetFrac * totalAfter12 - e.currentVal) / 12);
+  });
+  const rSum = Object.values(rebalRaw).reduce((a, b) => a + b, 0);
+  if (rSum > 0) Object.keys(rebalRaw).forEach(t => { rebalRaw[t] = rebalRaw[t] / rSum * monthly; });
+  const rebalAlloc = _integerAlloc(rebalRaw, monthly);
+
+  renderPACTable('pac-prop-table',  propAlloc,  etfList, monthly);
+  renderPACTable('pac-rebal-table', rebalAlloc, etfList, monthly);
+  resDiv.style.display = '';
+}
+
+function renderPACTable(id, alloc, etfList, monthly) {
+  const div = document.getElementById(id);
+  div.innerHTML = '';
+  ['STOCK', 'BOND'].forEach(cls => {
+    const items = etfList
+      .filter(e => e.type === cls)
+      .sort((a, b) => (alloc[b.ticker] || 0) - (alloc[a.ticker] || 0));
+    if (!items.length) return;
+    const clsTotal = items.reduce((s, e) => s + (alloc[e.ticker] || 0), 0);
+    div.insertAdjacentHTML('beforeend', `
+      <div style="font-size:.71rem;font-weight:700;text-transform:uppercase;letter-spacing:.09em;display:flex;justify-content:space-between;align-items:center;margin:.65rem 0 .42rem;color:${cls==='STOCK'?'var(--blue)':'var(--amber)'}">
+        <span>${cls === 'STOCK' ? 'Azionario' : 'Obbligazionario'}</span>
+        <span style="font-family:var(--mono)">${clsTotal} €</span>
+      </div>`);
+    items.forEach(e => {
+      const eur  = alloc[e.ticker] || 0;
+      const pct  = monthly > 0 ? (eur / monthly * 100).toFixed(1) : '0.0';
+      const barW = Math.round(eur / monthly * 100);
+      div.insertAdjacentHTML('beforeend', `
+        <div style="display:flex;align-items:center;gap:.45rem;margin-bottom:.38rem">
+          <span style="font-weight:700;font-size:.83rem;width:50px;color:var(--text)">${e.ticker}</span>
+          <div style="flex:1;background:var(--surface3);border-radius:4px;height:5px">
+            <div style="height:5px;background:var(--indigo);border-radius:4px;width:${barW}%"></div>
+          </div>
+          <span style="font-family:var(--mono);font-size:.85rem;font-weight:600;width:50px;text-align:right">${eur} €</span>
+          <span style="font-size:.73rem;color:var(--muted);width:38px;text-align:right">${pct}%</span>
+        </div>`);
+    });
+  });
+  const total = Object.values(alloc).reduce((a, b) => a + b, 0);
+  div.insertAdjacentHTML('beforeend', `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:.7rem;padding-top:.55rem;border-top:1px solid var(--border)">
+      <span style="font-size:.74rem;color:var(--muted)">Totale mensile</span>
+      <span style="font-family:var(--mono);font-size:.9rem;font-weight:700;color:var(--text)">${total} €</span>
+    </div>`);
 }
 
 // ── Geo Simulation ───────────────────────────────────────────────────────────
