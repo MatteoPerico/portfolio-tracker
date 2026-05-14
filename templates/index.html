@@ -583,6 +583,14 @@
       </div>
     </div>
 
+    <div class="card mb2">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.6rem">
+        <div class="card-title" style="margin:0">P&amp;L nel tempo</div>
+        <span id="dash-pnl-msg" style="font-size:.75rem;color:var(--muted)">Caricamento…</span>
+      </div>
+      <canvas id="chart-dash-pnl" style="display:none;max-height:185px"></canvas>
+    </div>
+
     <div class="grid g-5-7 mb2">
       <div class="card">
         <div class="card-title">Allocazione portafoglio</div>
@@ -1087,6 +1095,7 @@ function navigate(page) {
   document.getElementById('page-' + page).classList.add('active');
   document.querySelector(`[data-page="${page}"]`).classList.add('active');
   if (page === 'dashboard' || page === 'analytics') loadAnalytics();
+  if (page === 'dashboard') loadDashPnL();
   if (page === 'analytics') loadAnalyticsExtras();
   if (page === 'transactions') loadTransactions();
   if (page === 'geo') loadGeo();
@@ -1175,10 +1184,109 @@ async function refreshPrices() {
 
 // ── Performance & Risk ─────────────────────────────────────────────────────
 
+// ── Shared performance timeseries cache ──────────────────────────────────────
+let _perfCache = null;
+async function _fetchPerf() {
+  if (_perfCache) return _perfCache;
+  const res = await fetch('/api/performance');
+  _perfCache = await res.json();
+  return _perfCache;
+}
+
+// ── Dashboard P&L chart ───────────────────────────────────────────────────────
+async function loadDashPnL() {
+  const msgEl   = document.getElementById('dash-pnl-msg');
+  const canvas  = document.getElementById('chart-dash-pnl');
+  if (!canvas) return;
+  try {
+    const data = await _fetchPerf();
+    const ts   = data.timeseries || [];
+    if (!ts.length) { if (msgEl) msgEl.textContent = 'Nessun dato'; return; }
+    if (msgEl) msgEl.textContent = '';
+    canvas.style.display = 'block';
+
+    const labels = ts.map(d => d.date);
+    const pnl    = ts.map(d => parseFloat((d.value - d.invested).toFixed(2)));
+    const latest = pnl[pnl.length - 1] ?? 0;
+    const lineClr = latest >= 0 ? C.green : '#f87171';
+
+    if (CHARTS['chart-dash-pnl']) CHARTS['chart-dash-pnl'].destroy();
+    CHARTS['chart-dash-pnl'] = new Chart(canvas.getContext('2d'), {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [
+          {
+            label: 'P&L',
+            data:  pnl,
+            borderColor:     lineClr,
+            backgroundColor: lineClr + '28',
+            fill:    'origin',
+            tension: 0.3,
+            pointRadius: 0,
+            pointHoverRadius: 4,
+            borderWidth: 2,
+          },
+          // Zero reference line
+          {
+            data:       labels.map(() => 0),
+            borderColor: 'rgba(200,208,224,.18)',
+            borderDash: [4, 4],
+            borderWidth: 1,
+            pointRadius: 0,
+            fill: false,
+            parsing: false,
+            label: '',
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              title: items => items[0]?.label ?? '',
+              label: ctx => {
+                if (ctx.datasetIndex !== 0) return null;
+                const v = ctx.raw;
+                const invested = ts[ctx.dataIndex]?.invested || 1;
+                const pct = (v / invested * 100).toFixed(1);
+                const sign = v >= 0 ? '+' : '';
+                return ` P&L: ${sign}€ ${fmtN.format(v)}  (${sign}${pct}%)`;
+              },
+              filter: item => item.datasetIndex === 0,
+            },
+          },
+        },
+        scales: {
+          x: {
+            ticks: { maxTicksLimit: 9, font:{size:10}, color: C.muted, maxRotation: 0 },
+            grid:  { color: C.border },
+          },
+          y: {
+            ticks: {
+              callback: v => {
+                const abs = Math.abs(v);
+                const fmt = abs >= 1000 ? (v/1000).toFixed(1)+'k' : v.toFixed(0);
+                return (v >= 0 ? '+' : '') + '€' + fmt;
+              },
+              font: { size: 10 }, color: C.muted,
+            },
+            grid: { color: C.border },
+          },
+        },
+      },
+    });
+  } catch(e) {
+    if (msgEl) msgEl.textContent = 'Errore: ' + e.message;
+  }
+}
+
 async function loadPerformance() {
   try {
-    const res  = await fetch('/api/performance');
-    const data = await res.json();
+    const data = await _fetchPerf();
     document.getElementById('perf-loading').style.display = 'none';
     const canvas = document.getElementById('chart-perf');
     canvas.style.display = 'block';
@@ -2087,6 +2195,7 @@ async function applyGeoSim() {
 // ── Init ──────────────────────────────────────────────────────────────────────
 document.getElementById('input-date').valueAsDate = new Date();
 loadAnalytics();
+loadDashPnL();
 loadAnalyticsExtras();
 </script>
 </body>
