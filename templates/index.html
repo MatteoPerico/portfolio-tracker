@@ -1680,7 +1680,8 @@ function renderDashboard() {
 function renderDashTable(etfs) {
   const tbody = document.querySelector('#dash-table tbody');
   tbody.innerHTML = '';
-  etfs.forEach(e => {
+  const sorted = [...etfs].sort((a, b) => (b.holding_value || 0) - (a.holding_value || 0));
+  sorted.forEach(e => {
     const cw  = e.class_weight;
     const tw  = e.target_weight != null ? e.target_weight * 100 : null;
     const diff = (cw != null && tw != null) ? cw - tw : null;
