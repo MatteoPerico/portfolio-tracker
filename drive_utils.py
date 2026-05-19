@@ -5,9 +5,10 @@ import os
 import sqlite3
 from datetime import datetime
 
+_HERE        = os.path.dirname(os.path.abspath(__file__))
 SCOPES       = ['https://www.googleapis.com/auth/drive.file']
-TOKEN_PATH   = 'token.json'
-CREDS_PATH   = 'credentials.json'
+TOKEN_PATH   = os.path.join(_HERE, 'token.json')
+CREDS_PATH   = os.path.join(_HERE, 'credentials.json')
 REDIRECT_URI = 'http://localhost:5001/api/drive/callback'
 FOLDER_NAME  = 'Portfolio Tracker Backup'
 

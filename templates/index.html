@@ -523,6 +523,9 @@
     <a class="nav-item" data-page="transactions">
       <span class="nav-icon">≡</span><span>Transazioni</span>
     </a>
+    <a class="nav-item" data-page="pac">
+      <span class="nav-icon">⟳</span><span>PAC</span>
+    </a>
     <a class="nav-item" data-page="add">
       <span class="nav-icon">+</span><span>Nuovo acquisto</span>
     </a>
@@ -1017,6 +1020,85 @@
     </div>
   </div>
 
+  <!-- PAC ─────────────────────────────────────────────────────────────────── -->
+  <div id="page-pac" class="page">
+    <div class="page-header">
+      <div>
+        <div class="page-title">PAC</div>
+        <div class="page-sub">Piano di Accumulo del Capitale · configura le rate e registrale con un clic</div>
+      </div>
+    </div>
+
+    <!-- Configurazione -->
+    <div class="card mb2">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem">
+        <div style="font-size:.87rem;font-weight:700;color:var(--text)">Configurazione rate</div>
+        <button class="btn btn-ghost" onclick="addPACRow()" style="font-size:.79rem">+ Aggiungi ETF</button>
+      </div>
+
+      <div id="pac-cfg-header" style="display:none;grid-template-columns:96px 116px 1fr auto;gap:.5rem .75rem;
+           font-size:.71rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);
+           margin-bottom:.4rem;padding-bottom:.35rem;border-bottom:1px solid var(--border)">
+        <span>Ticker</span><span style="text-align:right">€ / mese</span><span></span><span></span>
+      </div>
+
+      <div id="pac-cfg-body">
+        <div style="color:var(--muted);font-size:.82rem;padding:.3rem 0">
+          Nessuna rata configurata. Aggiungi gli ETF che vuoi acquistare ogni mese.
+        </div>
+      </div>
+
+      <div style="display:flex;gap:.75rem;align-items:center;margin-top:.9rem">
+        <button class="btn btn-primary" onclick="savePACConfig()">Salva configurazione</button>
+        <span id="pac-cfg-msg" style="font-size:.8rem"></span>
+      </div>
+    </div>
+
+    <!-- Esecuzione -->
+    <div class="card" id="pac-exec-card" style="display:none">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:.75rem;margin-bottom:1.1rem">
+        <div>
+          <div style="font-size:.87rem;font-weight:700;color:var(--text)">Esegui rata PAC</div>
+          <div style="font-size:.77rem;color:var(--muted);margin-top:.2rem">
+            Inserisci il prezzo di acquisto corrente per ogni ETF, poi registra tutto in un clic
+          </div>
+        </div>
+        <button class="btn btn-ghost" onclick="fillCurrentPrices()" style="font-size:.79rem">↻ Usa prezzi correnti</button>
+      </div>
+
+      <div style="display:grid;grid-template-columns:150px 190px;gap:.75rem;margin-bottom:1.1rem">
+        <div class="field">
+          <label class="form-lbl">Data *</label>
+          <input type="date" id="pac-exec-date">
+        </div>
+        <div class="field">
+          <label class="form-lbl">Commissioni per ETF (€)</label>
+          <input type="number" id="pac-exec-fees" min="0" step="0.01" value="0" placeholder="0.00">
+        </div>
+      </div>
+
+      <!-- Table header -->
+      <div style="display:grid;grid-template-columns:70px 84px 1fr 96px;gap:.5rem .75rem;align-items:center;
+           font-size:.71rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);
+           margin-bottom:.45rem;padding-bottom:.35rem;border-bottom:1px solid var(--border)">
+        <span>Ticker</span>
+        <span style="text-align:right">Importo</span>
+        <span style="text-align:right;padding-right:.3rem">Prezzo (€) *</span>
+        <span style="text-align:right">Quote</span>
+      </div>
+
+      <div id="pac-exec-rows"></div>
+
+      <div id="pac-exec-total" style="display:flex;justify-content:space-between;align-items:center;
+           margin-top:.7rem;padding-top:.55rem;border-top:1px solid var(--border)"></div>
+
+      <div style="display:flex;gap:.75rem;align-items:center;margin-top:1rem">
+        <button class="btn btn-primary" id="pac-exec-btn" onclick="executePAC()">Registra rata PAC</button>
+        <span id="pac-exec-msg" style="font-size:.8rem"></span>
+      </div>
+    </div>
+  </div>
+
   <!-- BACKUP ──────────────────────────────────────────────────────────────── -->
   <div id="page-backup" class="page">
     <div class="page-header">
@@ -1173,6 +1255,7 @@ function navigate(page) {
   if (page === 'analytics') loadAnalyticsExtras();
   if (page === 'backup')    loadDriveStatus();
   if (page === 'transactions') loadTransactions();
+  if (page === 'pac')       loadPACPage();
   if (page === 'geo') loadGeo();
   if (page === 'target') { if (!geoData) loadGeo(); else { renderTargetInputs(); if (!geoSimTargets) initGeoSim(); } }
 }
@@ -2382,6 +2465,183 @@ async function restoreBackup(fileId, name) {
   _perfCache = null;
   await loadAnalytics();
   loadDashPnL();
+}
+
+// ── PAC Operations ─────────────────────────────────────────────────────────
+let _pacConfig = [];
+
+async function loadPACPage() {
+  const res = await fetch('/api/pac/config');
+  _pacConfig = await res.json();
+  renderPACConfig();
+  renderPACExec();
+}
+
+function renderPACConfig() {
+  const body   = document.getElementById('pac-cfg-body');
+  const header = document.getElementById('pac-cfg-header');
+  if (!_pacConfig.length) {
+    body.innerHTML = '<div style="color:var(--muted);font-size:.82rem;padding:.3rem 0">Nessuna rata configurata. Aggiungi gli ETF che vuoi acquistare ogni mese.</div>';
+    header.style.display = 'none';
+    return;
+  }
+  header.style.display = 'grid';
+  body.innerHTML = _pacConfig.map((e, i) => `
+    <div style="display:grid;grid-template-columns:96px 116px 1fr auto;gap:.5rem .75rem;align-items:center;margin-bottom:.4rem">
+      <input type="text" value="${e.ticker}" placeholder="Ticker"
+        style="text-transform:uppercase;font-weight:700;font-size:.85rem"
+        oninput="this.value=this.value.toUpperCase();_pacConfig[${i}].ticker=this.value">
+      <input type="number" value="${e.amount_euro}" min="1" step="1" placeholder="€/mese"
+        style="text-align:right"
+        oninput="_pacConfig[${i}].amount_euro=parseFloat(this.value)||0">
+      <span></span>
+      <button class="btn btn-ghost" onclick="removePACRow(${i})"
+        style="font-size:.75rem;color:var(--muted);padding:.25rem .55rem;line-height:1">✕</button>
+    </div>`).join('');
+}
+
+function addPACRow() {
+  _pacConfig.push({ ticker: '', amount_euro: 0 });
+  renderPACConfig();
+  const inputs = document.querySelectorAll('#pac-cfg-body input[type="text"]');
+  if (inputs.length) inputs[inputs.length - 1].focus();
+}
+
+function removePACRow(i) {
+  _pacConfig.splice(i, 1);
+  renderPACConfig();
+  renderPACExec();
+}
+
+async function savePACConfig() {
+  const valid = _pacConfig.filter(e => e.ticker && e.amount_euro > 0);
+  const res   = await fetch('/api/pac/config', {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify(valid),
+  });
+  const r   = await res.json();
+  const msg = document.getElementById('pac-cfg-msg');
+  if (r.ok) {
+    _pacConfig = valid;
+    renderPACConfig();
+    renderPACExec();
+    msg.style.color = 'var(--green)';
+    msg.textContent = '✓ Salvato';
+    setTimeout(() => msg.textContent = '', 3000);
+  } else {
+    msg.style.color = 'var(--red)';
+    msg.textContent = 'Errore nel salvataggio';
+  }
+}
+
+function renderPACExec() {
+  const valid = _pacConfig.filter(e => e.ticker && e.amount_euro > 0);
+  const card  = document.getElementById('pac-exec-card');
+  if (!valid.length) { card.style.display = 'none'; return; }
+  card.style.display = '';
+
+  const dateEl = document.getElementById('pac-exec-date');
+  if (!dateEl.value) dateEl.valueAsDate = new Date();
+
+  const total = valid.reduce((s, e) => s + e.amount_euro, 0);
+
+  document.getElementById('pac-exec-rows').innerHTML = valid.map((e, i) => `
+    <div style="display:grid;grid-template-columns:70px 84px 1fr 96px;gap:.5rem .75rem;align-items:center;margin-bottom:.45rem">
+      <span style="font-weight:700;font-size:.85rem;color:var(--text)">${e.ticker}</span>
+      <span style="font-family:var(--mono);font-size:.83rem;text-align:right">${e.amount_euro} €</span>
+      <input type="number" id="pac-price-${i}" min="0.0001" step="0.0001" placeholder="0.0000"
+        style="text-align:right" oninput="updatePACQuote(${i},${e.amount_euro})">
+      <span id="pac-qty-${i}" style="font-family:var(--mono);font-size:.77rem;color:var(--muted);text-align:right">—</span>
+    </div>`).join('');
+
+  document.getElementById('pac-exec-total').innerHTML = `
+    <span style="font-size:.74rem;color:var(--muted)">Totale rata</span>
+    <span style="font-family:var(--mono);font-size:.9rem;font-weight:700;color:var(--text)">${total} €</span>`;
+
+  document.getElementById('pac-exec-btn').textContent =
+    `Registra ${valid.length} transazion${valid.length === 1 ? 'e' : 'i'}`;
+}
+
+function updatePACQuote(i, amount) {
+  const price = parseFloat(document.getElementById(`pac-price-${i}`)?.value) || 0;
+  const el    = document.getElementById(`pac-qty-${i}`);
+  if (el) el.textContent = price > 0 ? (amount / price).toFixed(4) : '—';
+}
+
+async function fillCurrentPrices() {
+  if (!analyticsData) {
+    try { const res = await fetch('/api/analytics'); analyticsData = await res.json(); } catch (_) {}
+  }
+  const priceMap = {};
+  (analyticsData?.etfs || []).forEach(e => {
+    if (e.current_price_euro) priceMap[e.ticker] = e.current_price_euro;
+  });
+  const valid = _pacConfig.filter(e => e.ticker && e.amount_euro > 0);
+  valid.forEach((e, i) => {
+    const p  = priceMap[e.ticker];
+    const el = document.getElementById(`pac-price-${i}`);
+    if (p && el) { el.value = p; updatePACQuote(i, e.amount_euro); }
+  });
+}
+
+async function executePAC() {
+  const valid = _pacConfig.filter(e => e.ticker && e.amount_euro > 0);
+  if (!valid.length) return;
+
+  const date = document.getElementById('pac-exec-date').value;
+  const fees = parseFloat(document.getElementById('pac-exec-fees').value) || 0;
+  const msg  = document.getElementById('pac-exec-msg');
+  const btn  = document.getElementById('pac-exec-btn');
+
+  if (!date) {
+    msg.style.color = 'var(--red)';
+    msg.textContent = 'Inserisci una data';
+    return;
+  }
+
+  const entries = valid.map((e, i) => ({
+    ticker:      e.ticker,
+    amount_euro: e.amount_euro,
+    price_euro:  parseFloat(document.getElementById(`pac-price-${i}`)?.value) || 0,
+    fees_euro:   fees,
+  }));
+
+  const missing = entries.filter(e => e.price_euro <= 0).map(e => e.ticker);
+  if (missing.length) {
+    msg.style.color = 'var(--red)';
+    msg.textContent = `Prezzo mancante: ${missing.join(', ')}`;
+    return;
+  }
+
+  btn.disabled = true;
+  try {
+    const res = await fetch('/api/pac/execute', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ date, entries }),
+    });
+    const r = await res.json();
+    if (r.ok) {
+      msg.style.color = 'var(--green)';
+      msg.textContent = `✓ ${r.count} transazion${r.count === 1 ? 'e' : 'i'} registrat${r.count === 1 ? 'a' : 'e'}`;
+      valid.forEach((_, i) => {
+        const el = document.getElementById(`pac-price-${i}`);
+        if (el) el.value = '';
+        const qEl = document.getElementById(`pac-qty-${i}`);
+        if (qEl) qEl.textContent = '—';
+      });
+      _perfCache = null;  // invalidate performance cache
+      setTimeout(() => msg.textContent = '', 5000);
+    } else {
+      msg.style.color = 'var(--red)';
+      msg.textContent = 'Errore: ' + (r.error || 'sconosciuto');
+    }
+  } catch (e) {
+    msg.style.color = 'var(--red)';
+    msg.textContent = '✗ ' + e.message;
+  }
+  btn.disabled = false;
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────────

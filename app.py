@@ -76,6 +76,81 @@ def delete_transaction(tid):
     return jsonify({'ok': True})
 
 
+# ── API: PAC (Piano di Accumulo del Capitale) ─────────────────────────────────
+
+def _ensure_pac_table(db):
+    db.execute('''
+        CREATE TABLE IF NOT EXISTS pac_config (
+            ticker      TEXT PRIMARY KEY,
+            amount_euro REAL NOT NULL DEFAULT 0,
+            sort_order  INTEGER NOT NULL DEFAULT 0
+        )
+    ''')
+    db.commit()
+
+
+@app.route('/api/pac/config', methods=['GET'])
+@login_required
+def get_pac_config():
+    db = get_db()
+    _ensure_pac_table(db)
+    rows = db.execute(
+        'SELECT ticker, amount_euro FROM pac_config ORDER BY sort_order, ticker'
+    ).fetchall()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.route('/api/pac/config', methods=['POST'])
+@login_required
+def save_pac_config():
+    entries = request.json or []
+    db = get_db()
+    _ensure_pac_table(db)
+    db.execute('DELETE FROM pac_config')
+    for i, e in enumerate(entries):
+        ticker = str(e.get('ticker', '')).upper().strip()
+        amount = float(e.get('amount_euro', 0))
+        if ticker and amount > 0:
+            db.execute(
+                'INSERT INTO pac_config (ticker, amount_euro, sort_order) VALUES (?,?,?)',
+                (ticker, amount, i)
+            )
+    db.commit()
+    return jsonify({'ok': True})
+
+
+@app.route('/api/pac/execute', methods=['POST'])
+@login_required
+def execute_pac():
+    d       = request.json or {}
+    date    = d.get('date', datetime.utcnow().strftime('%Y-%m-%d'))
+    entries = d.get('entries', [])
+    if not entries:
+        return jsonify({'error': 'Nessuna rata configurata'}), 400
+
+    db    = get_db()
+    count = 0
+    for e in entries:
+        ticker = str(e.get('ticker', '')).upper().strip()
+        amount = float(e.get('amount_euro', 0))
+        price  = float(e.get('price_euro',  0))
+        fees   = float(e.get('fees_euro',   0))
+        if not ticker or amount <= 0 or price <= 0:
+            continue
+        quantity = round(amount / price, 6)
+        db.execute(
+            '''INSERT INTO transactions
+               (date, time, ticker, op_type, amount_euro, price_euro, fees_euro, quantity, isin, note)
+               VALUES (?,?,?,?,?,?,?,?,?,?)''',
+            (date, '', ticker, 'BUY', amount, price, fees, quantity, '', 'PAC')
+        )
+        db.execute('INSERT OR IGNORE INTO etf_info (ticker) VALUES (?)', (ticker,))
+        count += 1
+
+    db.commit()
+    return jsonify({'ok': True, 'count': count})
+
+
 # ── API: analytics ────────────────────────────────────────────────────────────
 
 @app.route('/api/analytics', methods=['GET'])
@@ -895,7 +970,8 @@ _drive_flows: dict = {}   # {state: flow} — keeps PKCE verifier alive until ca
 
 @app.route('/api/drive/status', methods=['GET'])
 def drive_status():
-    if not os.path.exists('credentials.json'):
+    import drive_utils as _du
+    if not os.path.exists(_du.CREDS_PATH):
         return jsonify({'status': 'no_credentials'})
     try:
         import drive_utils
